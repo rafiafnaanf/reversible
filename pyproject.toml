@@ -1,0 +1,20 @@
+[project]
+name = "reversible"
+version = "0.1.0"
+description = "Reversible Agent Runtime — record effectful agent tool calls and their recovery operations"
+readme = "README.md"
+authors = [{ name = "0xhonque", email = "lemonadesjuice@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+reversible = "reversible.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

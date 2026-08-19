@@ -1,0 +1,76 @@
+"""Command-line interface for the reversible runtime.
+
+Stage 2 exposes journal inspection::
+
+    uv run reversible history [--agent X] [--session Y] [--journal PATH]
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from .journal import filter_records, read_journal
+
+DEFAULT_JOURNAL = Path.home() / ".reversible" / "journal.jsonl"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="reversible",
+        description="Reversible Agent Runtime — record and inspect agent tool calls.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    hist = sub.add_parser("history", help="inspect the action journal")
+    hist.add_argument("--agent", dest="agent_id", default=None, help="filter by agent id")
+    hist.add_argument("--session", dest="session_id", default=None, help="filter by session id")
+    hist.add_argument(
+        "--journal",
+        default=str(DEFAULT_JOURNAL),
+        help=f"journal path (default: {DEFAULT_JOURNAL})",
+    )
+    hist.add_argument("--json", action="store_true", help="emit raw JSON lines")
+
+    return parser
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
+    records = read_journal(args.journal)
+    records = filter_records(records, agent_id=args.agent_id, session_id=args.session_id)
+
+    if args.json:
+        for r in records:
+            print(r.to_dict())
+        return 0
+
+    if not records:
+        print(f"(no records in {args.journal})")
+        return 0
+
+    print(f"Journal: {args.journal}  ({len(records)} records)\n")
+    print(f"{'seq':>4}  {'agent':<14} {'session':<12} {'type':<4} {'tool':<20} recovery")
+    print("-" * 80)
+    for r in records:
+        session = r.session_id[:12] if r.session_id else "-"
+        print(
+            f"{r.seq:>4}  {r.agent_id:<14} {session:<12} {r.action_type:<4} "
+            f"{r.tool:<20} {r.recovery}"
+        )
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "history":
+        return _cmd_history(args)
+
+    parser.error(f"unknown command: {args.command}")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
