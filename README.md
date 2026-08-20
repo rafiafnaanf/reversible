@@ -184,8 +184,26 @@ cp extensions/pi/reversible/index.ts ~/.pi/agent/extensions/reversible/
 ## Demos
 
 ```bash
-uv run python examples/basic.py          # Stage 1: command → stack
-uv run python examples/multi_agent.py    # Stage 2: 3 agents, 1 journal
+uv run python examples/example_tool_module.py   # HOW TO: write your own tools
+uv run python examples/basic.py                  # Stage 1: command → stack
+uv run python examples/multi_agent.py            # Stage 2: 3 agents, 1 journal
+```
+
+### Write your own effectful tools
+
+`examples/example_tool_module.py` is a ready-to-copy template — the analog
+of pi's example extensions. It shows the full pattern:
+
+1. Write the tool function (the forward effect).
+2. Write the recovery function (inverse for R, compensation for K).
+3. Decorate the tool with `@reversible(inverse=..., inverse_args=...)` or
+   `@compensable(compensation=..., compensation_args=...)`.
+4. Execute via `Runtime.call()` (recorded) — read-only tools that aren't
+   decorated are automatically skipped.
+
+```python
+@reversible(inverse=delete_file, inverse_args=("path",))
+def create_file(path: str, content: str) -> None: ...
 ```
 
 ## Tests
