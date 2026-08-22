@@ -162,3 +162,49 @@ def test_rollback_result_ok_property():
     assert RollbackResult(recovered=["1"], failed=[]).ok
     assert not RollbackResult(recovered=["1"], failed=[("1", "err")]).ok
     assert not RollbackResult(recovered=["1"], failed=[], stopped=True).ok
+
+
+def test_rollback_continue_on_error_recovers_what_it_can(tmp_path):
+    """continue_on_error=True undoes recoverable actions, reports the rest."""
+    import json
+
+    from reversible import JournalSink, read_journal
+    from reversible.rollback import RollbackEngine
+
+    J = tmp_path / "j.jsonl"
+    sink = JournalSink(J)
+    p = tmp_path
+
+    def w(seq, recovery, fname):
+        sink.append({"seq": seq, "agent_id": "pi", "namespace": "pi",
+                     "session_id": "s", "tool": "write", "args": {"path": str(p / fname)},
+                     "action_type": "R", "recovery": recovery,
+                     "recovery_args": [str(p / fname)], "recovery_kwargs": {},
+                     "is_error": False})
+
+    w(1, "delete_file", "a.txt")       # resolvable
+    w(2, "ghost_recovery", "b.txt")    # unresolvable
+    w(3, "delete_file", "c.txt")       # resolvable
+
+    for f in ("a.txt", "b.txt", "c.txt"):
+        (p / f).write_text("x")
+
+    # Default: strict stop.
+    strict = RollbackEngine(read_journal(J))
+    r1 = strict.rollback()
+    assert r1.recovered == ["3"]  # stopped at seq 2
+    assert r1.stopped
+    assert not (p / "c.txt").exists()  # c deleted
+    assert (p / "a.txt").exists()  # a NOT touched (stopped before it)
+
+    # continue_on_error: undoes everything it can, reports the failure.
+    continue_engine = RollbackEngine(read_journal(J), continue_on_error=True)
+    r2 = continue_engine.rollback()
+    assert "3" in r2.recovered
+    assert "1" in r2.recovered  # a.txt recovered despite seq 2 failing
+    assert len(r2.failed) == 1  # seq 2 failed
+    assert r2.stopped  # still not fully ok
+    assert not r2.ok
+    assert not (p / "a.txt").exists()
+    assert not (p / "c.txt").exists()
+    assert (p / "b.txt").exists()  # b's recovery was unresolvable

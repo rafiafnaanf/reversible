@@ -65,7 +65,20 @@ class RollbackEngine:
     reports - never claiming the environment was restored.
     """
 
-    def __init__(self, records: list[ActionRecord | JournalRecord]) -> None:
+    def __init__(
+        self,
+        records: list[ActionRecord | JournalRecord],
+        continue_on_error: bool = False,
+    ) -> None:
+        """Rollback engine over ``records`` (LIFO by seq).
+
+        ``continue_on_error=False`` (default): stop at the first failed
+        recovery - strict, all-or-nothing per pass.
+        ``continue_on_error=True``: keep going past failures, undoing what
+        it can and reporting every failure at the end. Still reports
+        ``ok=False`` / ``stopped=True`` so it never claims full restoration.
+        """
+        self._continue_on_error = continue_on_error
         # Sort by seq descending: LIFO / retire in program order.
         self._records = sorted(records, key=lambda r: r.seq, reverse=True)
         self._pending: list[ActionRecord | JournalRecord] = list(self._records)
@@ -81,7 +94,8 @@ class RollbackEngine:
                 result.failed.append((str(record.seq), str(exc)))
                 result.stopped = True
                 log.error("[UNDO] %s → FAIL: %s", record, exc)
-                break
+                if not self._continue_on_error:
+                    break
         # Only drop the records we actually recovered.
         self._pending = [r for r in self._pending if str(r.seq) not in result.recovered]
         return result

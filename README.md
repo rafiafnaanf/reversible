@@ -200,6 +200,18 @@ Recovery names in the journal resolve to callables via a name-keyed
 registry. Built-in recoveries (`delete_file`, `delete_directory`,
 `truncate_file`, `restore_file`, `noop`) are registered automatically.
 
+On failure, rollback **stops** by default (strict, all-or-nothing): the
+failed action stays in the stack and `result.ok` is `False`. To keep going
+past failures and undo everything it can, pass `continue_on_error=True`:
+
+```python
+result = runtime.rollback(continue_on_error=True)
+# result.recovered - what was undone
+# result.failed    - what couldn't be undone (still reported, ok=False)
+```
+
+CLI: `reversible rollback --continue-on-error`.
+
 ### Checkpoints
 
 `Runtime.checkpoint()` returns a marker for the current stack position;

@@ -43,6 +43,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="only undo actions with seq >= this checkpoint",
     )
     rb.add_argument(
+        "--continue-on-error", dest="continue_on_error", action="store_true",
+        default=False, help="keep going past failures, undoing what it can",
+    )
+    rb.add_argument(
         "--journal",
         default=str(DEFAULT_JOURNAL),
         help=f"journal path (default: {DEFAULT_JOURNAL})",
@@ -88,7 +92,7 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
         return 0
 
     print(f"Rollback {len(records)} action(s) from {args.journal} (LIFO)\n")
-    engine = RollbackEngine(records)
+    engine = RollbackEngine(records, continue_on_error=args.continue_on_error)
     result = engine.rollback()
 
     for seq in result.recovered:

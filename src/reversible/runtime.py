@@ -147,20 +147,25 @@ class Runtime:
         checkpoint: int,
         agent_id: str | None = None,
         session_id: str | None = None,
+        continue_on_error: bool = False,
     ) -> RollbackResult:
         """Undo only the actions recorded after ``checkpoint``.
 
         Recovers records with ``seq >= checkpoint`` (LIFO), leaving earlier
         actions in the stack. Scoped by identity like :meth:`rollback`.
+        ``continue_on_error`` behaves as in :meth:`rollback`.
         """
         records = self._collect_records(agent_id, session_id)
         target = [r for r in records if r.seq >= checkpoint]
-        return self._rollback_records(records, target)
+        return self._rollback_records(
+            records, target, continue_on_error=continue_on_error
+        )
 
     def rollback(
         self,
         agent_id: str | None = None,
         session_id: str | None = None,
+        continue_on_error: bool = False,
     ) -> RollbackResult:
         """Undo recorded actions in LIFO order, optionally scoped by identity.
 
@@ -168,12 +173,16 @@ class Runtime:
         (descending ``seq``). Without a sink, recovers the in-memory stack.
 
         Each recovery is verified (``verify_recovery``) before the action is
-        dropped. On failure the engine stops, keeps the failed action, and
-        returns a ``RollbackResult`` - it never claims the environment was
-        restored.
+        dropped. On failure the engine stops by default (``continue_on_error
+        =False``), keeps the failed action, and returns a ``RollbackResult``
+        - it never claims the environment was restored. With
+        ``continue_on_error=True`` it keeps going past failures, undoing
+        what it can and reporting every failure.
         """
         records = self._collect_records(agent_id, session_id)
-        return self._rollback_records(records, records)
+        return self._rollback_records(
+            records, records, continue_on_error=continue_on_error
+        )
 
     # -- internals ---------------------------------------------------------
 
@@ -201,12 +210,13 @@ class Runtime:
         self,
         records: list[Any],
         target: list[Any],
+        continue_on_error: bool = False,
     ) -> RollbackResult:
         """Recover ``target`` (subset of ``records``), then re-sync the stack.
 
         Keeps only records not recovered; failed actions stay in the stack.
         """
-        engine = RollbackEngine(target)
+        engine = RollbackEngine(target, continue_on_error=continue_on_error)
         result = engine.rollback()
         recovered = set(result.recovered)
         self._stack.clear()
