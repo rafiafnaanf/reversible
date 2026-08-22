@@ -13,6 +13,9 @@ domain. The pattern is always the same:
     3. Decorate the tool with @reversible / @compensable, telling the
        runtime which recovery to use and which arguments to forward.
 
+    4. (Recommended) Pass a namespace so your recoveries don't collide
+       with same-named recoveries from other modules/agents.
+
 Run it:
 
     uv run python examples/example_tool_module.py
@@ -50,13 +53,15 @@ def delete_file(path: str) -> None:
         os.remove(path)
 
 
-@reversible(inverse=delete_file, inverse_args=("path",))
+@reversible(inverse=delete_file, inverse_args=("path",), namespace="example")
 def create_file(path: str, content: str) -> None:
     """Forward effect: create a file.
 
     Decorator declaration:
       - inverse=delete_file       -> recovery operation
       - inverse_args=("path",)    -> which original args to forward
+      - namespace="example"       -> scope for this recovery, so a
+        same-named recovery in another module/agent doesn't collide
     """
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(content)
@@ -69,7 +74,8 @@ def cancel_notification(message: str) -> None:
     print(f"[mock] cancelled notification: {message!r}")
 
 
-@compensable(compensation=cancel_notification, compensation_args=("message",))
+@compensable(compensation=cancel_notification, compensation_args=("message",),
+              namespace="example")
 def send_notification(message: str) -> None:
     """Forward effect: send (here: mock) a notification."""
     print(f"[mock] sent notification: {message!r}")
@@ -95,10 +101,12 @@ def main() -> None:
     workdir = tempfile.mkdtemp(prefix="reversible-example-")
 
     # In-memory stack only:
-    runtime = Runtime(agent_id="example", session_id="demo-1")
+    runtime = Runtime(agent_id="example", session_id="demo-1",
+                    namespace="example")
 
     # To also persist to the durable journal, pass a sink:
     #   runtime = Runtime(agent_id="example", session_id="demo-1",
+    #                     namespace="example",
     #                     sink=JournalSink("~/.reversible/journal.jsonl"))
 
     path = os.path.join(workdir, "hello.txt")

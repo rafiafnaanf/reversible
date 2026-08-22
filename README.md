@@ -314,6 +314,18 @@ of pi's example extensions. It shows the full pattern:
 4. Execute via `Runtime.call()` (recorded). Read-only tools that aren't
    decorated are automatically skipped.
 
+**Namespaces:** pass `namespace=` to the decorator (and to `Runtime`) so
+same-named recoveries from different modules/agents don't collide. Two
+agents both with a recovery named `X` resolve independently:
+
+```python
+@reversible(inverse=delete_file, inverse_args=("path",), namespace="coding-agent")
+def X(path): ...
+
+@reversible(inverse=restore_state, inverse_args=("path",), namespace="ghidra-mcp")
+def X(path): ...
+```
+
 ## Tests
 
 ```bash
