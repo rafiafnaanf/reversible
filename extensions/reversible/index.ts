@@ -31,6 +31,7 @@ import * as path from "node:path";
 // ---------------------------------------------------------------------------
 
 const AGENT_ID = "pi";
+const NAMESPACE = "pi";
 const MAX_PREIMAGE_BYTES = 5 * 1024 * 1024; // skip snapshotting huge files
 
 /** "global" (default) or "local" (per-project). */
@@ -208,6 +209,7 @@ function recordResult(
     {
       seq: takeSeqAtCompletion(event.toolCallId, paths.journal),
       agent_id: AGENT_ID,
+      namespace: NAMESPACE,
       session_id: sessionId,
       tool: event.toolName,
       args,
