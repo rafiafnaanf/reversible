@@ -1,5 +1,5 @@
 """
-Example custom tool module — a template for developers.
+Example custom tool module - a template for developers.
 
 This module shows how to write your OWN effectful tools for the Reversible
 Agent Runtime, the same way pi's example extensions show how to write your
@@ -41,7 +41,7 @@ from reversible import (
 configure_logging()
 
 # ---------------------------------------------------------------------------
-# 1. Custom tool module — your tools
+# 1. Custom tool module - your tools
 # ---------------------------------------------------------------------------
 
 def delete_file(path: str) -> None:
@@ -86,7 +86,7 @@ def read_file(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 3. Usage — record into the action stack (and optionally the journal)
+# 3. Usage - record into the action stack (and optionally the journal)
 # ---------------------------------------------------------------------------
 
 def main() -> None:

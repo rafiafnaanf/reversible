@@ -21,7 +21,7 @@ DEFAULT_JOURNAL = Path.home() / ".reversible" / "journal.jsonl"
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reversible",
-        description="Reversible Agent Runtime — record and inspect agent tool calls.",
+        description="Reversible Agent Runtime - record and inspect agent tool calls.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -97,10 +97,10 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
         print(f"[UNDO] seq {seq} → FAIL: {err}")
 
     if result.ok:
-        print("\n[INFO] Rollback complete — environment restored.")
+        print("\n[INFO] Rollback complete - environment restored.")
         return 0
 
-    print("\n[ERROR] Rollback stopped — environment NOT fully restored.")
+    print("\n[ERROR] Rollback stopped - environment NOT fully restored.")
     return 1
 
 

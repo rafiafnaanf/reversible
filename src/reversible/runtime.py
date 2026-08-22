@@ -22,7 +22,7 @@ class Runtime:
     recorded. Undecorated tools (thinking, reading, pure computation)
     execute normally but are **not** recorded.
 
-    Recovery operations are never executed here — they are only recorded.
+    Recovery operations are never executed here - they are only recorded.
     They run when rollback is explicitly requested.
 
     Identity: ``agent_id`` / ``session_id`` tag every record so a shared
@@ -61,11 +61,13 @@ class Runtime:
         policy = registry.execute_policy(tool)
 
         if metadata is None and policy is None:
-            log.debug("[SKIP] %s(...) — not registered, not recorded", tool.__name__)
+            log.debug("[SKIP] %s(...) - not registered, not recorded", tool.__name__)
             return tool(*args, **kwargs)
 
         if policy == "skip":
-            log.debug("[SKIP] %s(...) — @execute policy=skip, not recorded", tool.__name__)
+            log.debug(
+                "[SKIP] %s(...) - @execute policy=skip, not recorded", tool.__name__
+            )
             return tool(*args, **kwargs)
 
         result = tool(*args, **kwargs)
@@ -148,37 +150,9 @@ class Runtime:
         Recovers records with ``seq >= checkpoint`` (LIFO), leaving earlier
         actions in the stack. Scoped by identity like :meth:`rollback`.
         """
-        if self._sink is not None:
-            from .journal import read_journal
-
-            records = read_journal(self._sink.path)
-            records = filter_records(
-                records, agent_id=agent_id, session_id=session_id
-            )
-            target = [r for r in records if r.seq >= checkpoint]
-            engine = RollbackEngine(target)
-            result = engine.rollback()
-            self._stack.clear()
-            recovered = set(result.recovered)
-            for r in records:
-                if str(r.seq) not in recovered:
-                    self._stack.push(r)
-            return result
-
-        records = list(self._stack)
-        if agent_id is not None:
-            records = [r for r in records if r.agent_id == agent_id]
-        if session_id is not None:
-            records = [r for r in records if r.session_id == session_id]
+        records = self._collect_records(agent_id, session_id)
         target = [r for r in records if r.seq >= checkpoint]
-        engine = RollbackEngine(target)
-        result = engine.rollback()
-        recovered = set(result.recovered)
-        self._stack.clear()
-        for r in records:
-            if str(r.seq) not in recovered:
-                self._stack.push(r)
-        return result
+        return self._rollback_records(records, target)
 
     def rollback(
         self,
@@ -192,35 +166,45 @@ class Runtime:
 
         Each recovery is verified (``verify_recovery``) before the action is
         dropped. On failure the engine stops, keeps the failed action, and
-        returns a ``RollbackResult`` — it never claims the environment was
+        returns a ``RollbackResult`` - it never claims the environment was
         restored.
         """
+        records = self._collect_records(agent_id, session_id)
+        return self._rollback_records(records, records)
+
+    # -- internals ---------------------------------------------------------
+
+    def _collect_records(
+        self,
+        agent_id: str | None,
+        session_id: str | None,
+    ) -> list[Any]:
+        """Gather the records to consider, scoped by identity."""
         if self._sink is not None:
             from .journal import read_journal
 
             records = read_journal(self._sink.path)
-            records = filter_records(
+            return filter_records(
                 records, agent_id=agent_id, session_id=session_id
             )
-            engine = RollbackEngine(records)
-            result = engine.rollback()
-            # Re-sync the in-memory view: keep only records not recovered.
-            self._stack.clear()
-            recovered = set(result.recovered)
-            for r in records:
-                if str(r.seq) not in recovered:
-                    self._stack.push(r)
-            return result
-
-        # No sink: roll back the in-memory stack.
         records = list(self._stack)
         if agent_id is not None:
             records = [r for r in records if r.agent_id == agent_id]
         if session_id is not None:
             records = [r for r in records if r.session_id == session_id]
-        engine = RollbackEngine(records)
+        return records
+
+    def _rollback_records(
+        self,
+        records: list[Any],
+        target: list[Any],
+    ) -> RollbackResult:
+        """Recover ``target`` (subset of ``records``), then re-sync the stack.
+
+        Keeps only records not recovered; failed actions stay in the stack.
+        """
+        engine = RollbackEngine(target)
         result = engine.rollback()
-        # Drop recovered records from the stack; keep failed ones.
         recovered = set(result.recovered)
         self._stack.clear()
         for r in records:
@@ -228,14 +212,12 @@ class Runtime:
                 self._stack.push(r)
         return result
 
-    # -- internals ---------------------------------------------------------
-
     def _next_id(self) -> str:
         self._counter += 1
         return f"{self._counter:03d}"
 
     def _next_seq(self) -> int:
-        """Global sequence number — from the sink if present, else local."""
+        """Global sequence number - from the sink if present, else local."""
         if self._sink is not None:
             return next_seq(self._sink.path)
         self._seq_counter = getattr(self, "_seq_counter", 0) + 1

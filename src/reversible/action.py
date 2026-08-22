@@ -10,8 +10,8 @@ from typing import Any, Callable
 class ActionType(str, Enum):
     """Classification of an action's recovery semantics.
 
-    R — reversible: an exact inverse restores the prior state.
-    K — compensable: a compensation operation mitigates the effect
+    R - reversible: an exact inverse restores the prior state.
+    K - compensable: a compensation operation mitigates the effect
         (it does not necessarily restore the exact original state).
     """
 
@@ -52,7 +52,7 @@ class ActionRecord:
 
     # -- verification (volatile state, e.g. ASLR) ---------------------------
     # Optional post-condition: runs after recovery, asserts observable state
-    # matches expectation. Read back the value — don't trust the claim.
+    # matches expectation. Read back the value - don't trust the claim.
     verify: Callable[..., Any] | None = None
 
     # -- identity (multi-agent journal) ------------------------------------

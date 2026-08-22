@@ -1,4 +1,4 @@
-"""Demo — three agents, one shared durable journal.
+"""Demo - three agents, one shared durable journal.
 
 Simulates the motivating scenario: mixed harness/system agents each record
 effectful calls into a single JSONL journal, tagged with agent_id and
@@ -51,20 +51,20 @@ def send_notification(message: str) -> None:
 # -- agents ---------------------------------------------------------------
 
 def pi_agent() -> None:
-    """Agent A — pi harness (session s-pi-1)."""
+    """Agent A - pi harness (session s-pi-1)."""
     runtime = Runtime(agent_id="pi", session_id="s-pi-1", sink=JournalSink(JOURNAL))
     runtime.call(create_file, os.path.join(WORKDIR, "notes.md"), "# notes")
     runtime.call(create_file, os.path.join(WORKDIR, "todo.md"), "- [ ] task")
 
 
 def email_agent() -> None:
-    """Agent B — system agent (session s-email-1)."""
+    """Agent B - system agent (session s-email-1)."""
     runtime = Runtime(agent_id="email-agent", session_id="s-email-1", sink=JournalSink(JOURNAL))
     runtime.call(send_notification, "Deployment finished")
 
 
 def wazuh_agent() -> None:
-    """Agent C — system agent (session s-wazuh-1)."""
+    """Agent C - system agent (session s-wazuh-1)."""
     runtime = Runtime(agent_id="wazuh-agent", session_id="s-wazuh-1", sink=JournalSink(JOURNAL))
     runtime.call(create_file, os.path.join(WORKDIR, "alert.txt"), "high severity")
     runtime.call(send_notification, "Alert raised")
@@ -93,7 +93,7 @@ def main() -> None:
     print("\n=== Per-agent filtering (the motivating scenario) ===\n")
     for agent in ("pi", "email-agent", "wazuh-agent"):
         scoped = filter_records(records, agent_id=agent)
-        print(f"{agent}: {len(scoped)} record(s) — " + ", ".join(r.tool for r in scoped))
+        print(f"{agent}: {len(scoped)} record(s) - " + ", ".join(r.tool for r in scoped))
 
     print("\n=== CLI equivalent ===\n")
     print("uv run reversible history --journal <path> --agent email-agent")

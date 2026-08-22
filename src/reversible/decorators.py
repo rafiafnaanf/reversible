@@ -1,7 +1,7 @@
 """Tool decorators that register recovery metadata.
 
 Decorated tools are recorded by the runtime when called. The recovery
-operation is only *recorded* here — it is never executed during normal
+operation is only *recorded* here - it is never executed during normal
 execution; it runs only when rollback is explicitly requested.
 """
 
@@ -103,12 +103,13 @@ def execute(
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a tool as binary execution with a declared policy.
 
-    Executing an arbitrary binary is the X (unknown) case — its effects
+    Executing an arbitrary binary is the X (unknown) case - its effects
     can't be introspected. So execution is *declared*, not auto-detected:
 
-    * ``policy="skip"`` — trusted binary, not logged (e.g. ghidra).
-    * ``policy="record"`` — audit-only K, manual reversal.
-    * ``policy="sandbox"`` — untrusted, run in a sandbox (e.g. docker);
+    * ``policy="skip"`` - trusted binary, not logged (e.g. a trusted
+      executable).
+    * ``policy="record"`` - audit-only K, manual reversal.
+    * ``policy="sandbox"`` - untrusted, run in a sandbox (e.g. docker);
       reversal is coarse (nuke the sandbox).
 
     Default policy is path-based: a binary under ``/bin`` / ``/usr/bin``
@@ -118,7 +119,7 @@ def execute(
     Example::
 
         @execute(policy="skip")
-        def run_ghidra(path: str, args: list[str]): ...
+        def run_trusted(path: str, args: list[str]): ...
 
         @execute()  # defaults to sandbox for non-system paths
         def run_binary(path: str, args: list[str]): ...

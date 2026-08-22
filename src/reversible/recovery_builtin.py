@@ -2,7 +2,7 @@
 
 Journal records store ``recovery`` as a *name*. Rollback resolves names to
 callables via the registry's ``by_name`` space. These are the standard
-recoveries that configs, hooks, and examples reference — so a journal record
+recoveries that configs, hooks, and examples reference - so a journal record
 naming ``delete_file`` always resolves, no matter which harness wrote it.
 
 Registered automatically at import into the global ``registry``.

@@ -1,4 +1,4 @@
-"""Reversible Agent Runtime — record effectful agent tool calls.
+"""Reversible Agent Runtime - record effectful agent tool calls.
 
 Decorated tool calls are executed and recorded onto an action stack with
 their recovery operations. Recovery is never executed during normal

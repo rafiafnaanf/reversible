@@ -1,4 +1,4 @@
-"""Reversal — the full record → rollback cycle.
+"""Reversal - the full record → rollback cycle.
 
 The canonical library entry: define effectful tools, record them, then
 roll back and verify restoration. Run:

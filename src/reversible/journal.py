@@ -116,7 +116,7 @@ def record_to_journal(record: ActionRecord) -> dict[str, Any]:
             bound.apply_defaults()
             args_obj = dict(bound.arguments)
         except (TypeError, ValueError):
-            # Positional-only / unboundable — fall back to raw list.
+            # Positional-only / unboundable - fall back to raw list.
             args_obj = {"_args": list(record.args)}
             if record.kwargs:
                 args_obj.update(record.kwargs)

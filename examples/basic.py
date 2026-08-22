@@ -1,4 +1,4 @@
-"""Demo — command → stack.
+"""Demo - command → stack.
 
 Shows effectful (write/create/send) tool calls being recorded onto the
 action stack, while read-only tools are not recorded. Recovery operations
@@ -48,7 +48,7 @@ def write_file(path: str, content: str) -> None:
 
 
 def read_file(path: str) -> str:
-    """Read-only tool — must NOT be recorded."""
+    """Read-only tool - must NOT be recorded."""
     with open(path, encoding="utf-8") as fh:
         return fh.read()
 

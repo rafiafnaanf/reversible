@@ -1,4 +1,4 @@
-"""Reversal — simple recovery entries.
+"""Reversal - simple recovery entries.
 
 Shows the "simple stuff": trivial inverses that need no preimage, plus
 append-write which needs the original size captured BEFORE the append.
@@ -72,7 +72,7 @@ def append_write(path: str, content: str, original_size: int = 0) -> None:
     """Append to a file.
 
     The recovery (truncate) needs the size BEFORE the append, so the tool
-    captures it itself and passes it through as ``original_size`` — the
+    captures it itself and passes it through as ``original_size`` - the
     preimage rule: recovery args must be captured pre-execution.
     """
     with open(path, "a", encoding="utf-8") as fh:

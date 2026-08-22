@@ -7,14 +7,14 @@ def test_execute_skip_not_recorded():
     calls = []
 
     @execute(policy="skip")
-    def run_ghidra(path: str) -> None:
+    def run_trusted(path: str) -> None:
         calls.append(path)
 
     runtime = Runtime()
-    runtime.call(run_ghidra, "/opt/ghidra/analyzeHeadless")
+    runtime.call(run_trusted, "/opt/trusted/analyzer")
 
     assert len(runtime) == 0  # skip → not recorded
-    assert calls == ["/opt/ghidra/analyzeHeadless"]
+    assert calls == ["/opt/trusted/analyzer"]
 
 
 def test_execute_record_is_record_only_k():

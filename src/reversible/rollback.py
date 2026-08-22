@@ -57,7 +57,7 @@ class RollbackEngine:
     ``JournalRecord`` (holding names). The engine resolves names via the
     registry, runs each recovery, then verifies (``verify_recovery``) before
     removing the record. On failure it stops, keeps the failed record, and
-    reports — never claiming the environment was restored.
+    reports - never claiming the environment was restored.
     """
 
     def __init__(self, records: list[ActionRecord | JournalRecord]) -> None:
@@ -89,7 +89,7 @@ class RollbackEngine:
                 RuntimeError(f"no recovery registered for {record.recovery!r}"),
             )
         recovery(*record.recovery_args, **record.recovery_kwargs)
-        # Verify restoration (the ASLR mechanism) — proves, not assumes.
+        # Verify restoration (the ASLR mechanism) - proves, not assumes.
         if isinstance(record, ActionRecord):
             record.verify_recovery()
 

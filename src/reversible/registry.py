@@ -24,7 +24,7 @@ class ToolMetadata:
 
     ``verify`` is an optional post-condition: a callable that runs *after*
     recovery and asserts the observable state matches expectation. It is
-    how volatile state (e.g. ASLR) is verified — read back the value, don't
+    how volatile state (e.g. ASLR) is verified - read back the value, don't
     trust the claim that recovery ran.
     """
 
@@ -40,8 +40,8 @@ class RecoveryRegistry:
 
     Two lookup spaces:
 
-    * ``by_function`` — decorators register tools here (identity-keyed).
-    * ``by_name`` — recovery operations registered by name, so journal
+    * ``by_function`` - decorators register tools here (identity-keyed).
+    * ``by_name`` - recovery operations registered by name, so journal
       records (which store ``recovery`` as a string) can resolve to
       callables at rollback time. Built-in recoveries (``delete_file``,
       ``restore_file``, …) live here.

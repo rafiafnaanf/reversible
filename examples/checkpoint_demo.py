@@ -1,4 +1,4 @@
-"""Reversal — checkpoints: roll back to a specific point.
+"""Reversal - checkpoints: roll back to a specific point.
 
 Shows surgical rollback: set a checkpoint, do more work, then undo only
 the work after the checkpoint, leaving earlier actions intact.
@@ -51,17 +51,17 @@ def main() -> None:
     print(f"  config.txt: {os.path.exists(os.path.join(WORKDIR, 'config.txt'))}")
     print(f"  temp1.txt:  {os.path.exists(os.path.join(WORKDIR, 'temp1.txt'))}")
 
-    print(f"\n=== rollback_to({checkpoint}) — undo only the post-checkpoint work ===\n")
+    print(f"\n=== rollback_to({checkpoint}) - undo only the post-checkpoint work ===\n")
     result = runtime.rollback_to(checkpoint)
     for seq in result.recovered:
         print(f"[UNDO] seq {seq} → OK")
 
     print("\n=== Verify ===\n")
-    print(f"config.txt exists: {os.path.exists(os.path.join(WORKDIR, 'config.txt'))}  (should be True — kept)")
-    print(f"setup.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'setup.txt'))}  (should be True — kept)")
-    print(f"temp1.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'temp1.txt'))}  (should be False — undone)")
-    print(f"temp2.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'temp2.txt'))}  (should be False — undone)")
-    print(f"stack size:        {len(runtime)}  (should be 2 — the kept setup)")
+    print(f"config.txt exists: {os.path.exists(os.path.join(WORKDIR, 'config.txt'))}  (should be True - kept)")
+    print(f"setup.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'setup.txt'))}  (should be True - kept)")
+    print(f"temp1.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'temp1.txt'))}  (should be False - undone)")
+    print(f"temp2.txt exists:  {os.path.exists(os.path.join(WORKDIR, 'temp2.txt'))}  (should be False - undone)")
+    print(f"stack size:        {len(runtime)}  (should be 2 - the kept setup)")
 
     shutil.rmtree(WORKDIR, ignore_errors=True)
     print("\nDone.")

@@ -1,4 +1,4 @@
-"""Reversal — sandboxed execution with Docker (coarse reversal).
+"""Reversal - sandboxed execution with Docker (coarse reversal).
 
 For executing untrusted binaries (e.g. malware analysis) where per-action
 inverses are impossible, the container is the TRANSACTION BOUNDARY: run the
@@ -38,7 +38,7 @@ def docker_available() -> bool:
 
 
 class Sandbox:
-    """A throwaway container — the unit of reversal."""
+    """A throwaway container - the unit of reversal."""
 
     def __init__(self, image: str = IMAGE) -> None:
         self.name = f"reversible-sandbox-{uuid.uuid4().hex[:8]}"
@@ -71,7 +71,7 @@ def run_in_sandbox(sandbox: Sandbox, command: str) -> str:
 
 def main() -> None:
     if not docker_available():
-        print("[SKIP] docker CLI not available — run this example where docker is installed.")
+        print("[SKIP] docker CLI not available - run this example where docker is installed.")
         return
 
     print("=== Sandboxed execution (coarse reversal) ===\n")
@@ -81,7 +81,7 @@ def main() -> None:
     sandbox.start()
     print(f"container started: {sandbox.name}")
 
-    # Untrusted work inside the sandbox — recorded via @execute(policy="sandbox").
+    # Untrusted work inside the sandbox - recorded via @execute(policy="sandbox").
     runtime.call(run_in_sandbox, sandbox, "echo hello > /tmp/marker.txt")
     runtime.call(run_in_sandbox, sandbox, "echo world >> /tmp/marker.txt")
 
