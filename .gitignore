@@ -18,8 +18,8 @@ htmlcov/
 
 # Node (pi extension)
 node_modules/
-extensions/pi/reversible/node_modules/
-extensions/pi/reversible/package-lock.json
+extensions/reversible/node_modules/
+package-lock.json
 
 # Local journal / preimages (never commit these)
 .reversible/

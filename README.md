@@ -271,11 +271,17 @@ Two modes, set via the `REVERSIBLE_MODE` env var:
 * `local`: journal in `<project>/.reversible/journal.jsonl`, scoped per
   project
 
-Install globally (hooks every pi session):
+Install as a pi package (zero external runtime dependencies):
+
+```bash
+pi install git:github.com/rafiafnaanf/reversible
+```
+
+Or copy the extension directly (hooks every pi session):
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/reversible
-cp extensions/pi/reversible/index.ts ~/.pi/agent/extensions/reversible/
+cp extensions/reversible/index.ts ~/.pi/agent/extensions/reversible/
 ```
 
 To log per-project instead of globally:
@@ -330,7 +336,7 @@ src/reversible/
 ├── logging.py           # stdlib logging
 └── exceptions.py
 
-extensions/pi/reversible/index.ts   # global pi hook (TypeScript)
+extensions/reversible/index.ts   # global pi hook (TypeScript)
 ```
 
 ## License

@@ -1,0 +1,22 @@
+{
+  "name": "reversible",
+  "version": "1.0.0",
+  "description": "Reversible Agent Runtime - pi extension that records effectful agent tool calls",
+  "keywords": [
+    "pi-package"
+  ],
+  "type": "module",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}
