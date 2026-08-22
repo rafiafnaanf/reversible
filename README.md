@@ -262,14 +262,26 @@ regardless of completion order. This is the reorder-buffer rule.
 ### Global pi hook
 
 A TypeScript extension records effectful pi tool calls (`write`, `edit`,
-`bash`) into `~/.reversible/journal.jsonl`, tagged with the session id.
-Read-only tools (`read`, `grep`, `find`, `ls`) are never recorded.
+`bash`) into a JSONL journal, tagged with the session id. Read-only tools
+(`read`, `grep`, `find`, `ls`) are never recorded.
+
+Two modes, set via the `REVERSIBLE_MODE` env var:
+
+* `global` (default): journal in `~/.reversible/journal.jsonl`
+* `local`: journal in `<project>/.reversible/journal.jsonl`, scoped per
+  project
 
 Install globally (hooks every pi session):
 
 ```bash
 mkdir -p ~/.pi/agent/extensions/reversible
 cp extensions/pi/reversible/index.ts ~/.pi/agent/extensions/reversible/
+```
+
+To log per-project instead of globally:
+
+```bash
+REVERSIBLE_MODE=local pi
 ```
 
 ## Demos
