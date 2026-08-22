@@ -45,6 +45,9 @@ class JournalRecord:
     result_summary: str = ""
     ts: str = ""
 
+    def __str__(self) -> str:
+        return f"{self.seq:03d} {self.action_type} {self.tool}"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "seq": self.seq,

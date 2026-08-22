@@ -300,6 +300,8 @@ uv run python examples/reversal_basic.py         # record -> rollback -> verify
 uv run python examples/recovery_simple.py        # empty file/dir, append-write
 uv run python examples/checkpoint_demo.py        # roll back to a checkpoint
 uv run python examples/sandbox_docker.py        # sandboxed exec, coarse reversal
+uv run python examples/presentation_benchmark.py  # benchmark: run -> revert -> verify
+uv run python examples/pi_hook_demo.py            # pi hook -> journal -> CLI rollback
 ```
 
 ### Write your own effectful tools
@@ -313,6 +315,25 @@ of pi's example extensions. It shows the full pattern:
    `@compensable(compensation=..., compensation_args=...)`.
 4. Execute via `Runtime.call()` (recorded). Read-only tools that aren't
    decorated are automatically skipped.
+
+## Presentation benchmark
+
+For showing the project to a supervisor, two scripts demonstrate the full
+record -> revert -> verify cycle:
+
+```bash
+uv run python examples/presentation_benchmark.py   # run -> revert down stack -> verify
+uv run python examples/pi_hook_demo.py             # pi hook -> journal -> CLI rollback
+```
+
+`presentation_benchmark.py` simulates a pi session doing writes and an
+edit, shows the action stack, then reverts down the stack step by step
+(edit restore, then each file delete) and prints `[PASS]` for every
+verification.
+
+`pi_hook_demo.py` shows the real integration path: journal entries in the
+pi-extension format, then the actual CLI `reversible rollback`, then
+verifies the files are gone.
 
 ## Tests
 
