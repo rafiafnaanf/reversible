@@ -94,7 +94,7 @@ def main() -> None:
 
     workdir = tempfile.mkdtemp(prefix="reversible-example-")
 
-    # In-memory stack only (Stage 1):
+    # In-memory stack only:
     runtime = Runtime(agent_id="example", session_id="demo-1")
 
     # To also persist to the durable journal, pass a sink:

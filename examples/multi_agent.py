@@ -1,4 +1,4 @@
-"""Stage 2 demo — three agents, one shared durable journal.
+"""Demo — three agents, one shared durable journal.
 
 Simulates the motivating scenario: mixed harness/system agents each record
 effectful calls into a single JSONL journal, tagged with agent_id and

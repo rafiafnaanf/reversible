@@ -2,12 +2,13 @@
 
 # Reversible Agent Runtime
 
-**Record effectful agent tool calls — and get ready to take them back.**
+**Record effectful agent tool calls — and take them back.**
 
 A small, framework-independent Python library that sits between an AI agent
 and its tools. It records every effectful call (write, delete, create, send,
-…) onto an action stack together with its **recovery operation**, so the
-agent's history can later be rolled back in LIFO order.
+…) onto an action stack together with its **recovery operation**, then
+restores prior state through reverse execution — scoped per agent/session,
+verified after each recovery, or rolled back to a checkpoint.
 
 </div>
 
@@ -22,7 +23,7 @@ have known recovery operations**, and a generic execution layer can record
 them so prior state can be restored.
 
 It does **not** try to automatically classify actions as reversible /
-compensable / irreversible — that's future work (see [Roadmap](#roadmap)).
+compensable / irreversible — that's future work.
 
 ## How it works
 
@@ -60,14 +61,18 @@ Runtime
   + append, so concurrent writers never collide on sequence numbers.
 * **Deterministic ordering** — `seq` is assigned at *issue* time (program
   order), so parallel execution can't scramble rollback order.
+* **Rollback** — LIFO undo/compensation, scoped per agent/session, verified
+  after each recovery.
+* **Checkpoints** — roll back to a specific point, leaving earlier actions
+  intact.
 * **Durable journal** — append-only JSONL, the cross-language contract
   between any harness and the engine.
 * **Multi-agent identity** — every record carries `agent_id`, `session_id`,
-  and a global `seq`, so one shared journal can be filtered (and later
-  rolled back) per agent/session.
+  and a global `seq`, so one shared journal can be filtered and rolled back
+  per agent/session.
 * **Global pi hook** — a TypeScript extension that records effectful pi
   tool calls into the journal automatically.
-* **CLI** — `uv run reversible history` to inspect the journal.
+* **CLI** — `reversible history` / `reversible rollback`.
 
 ## Install
 
@@ -139,12 +144,11 @@ restored. This is how restoration is *proven*, not assumed:
 def set_aslr_tool(value: int) -> None: ...
 ```
 
-The predicate receives the original call's arguments and returns truthy
-when the state is restored. If it returns falsy, the runtime raises
-`AssertionError` — catching silent recovery failure. (The rollback engine
-will call this after each recovery; it's callable directly today.)
+The predicate receives the recovery's arguments and returns truthy when the
+state is restored. If it returns falsy, the runtime raises `AssertionError`
+— catching silent recovery failure.
 
-## Durable journal (Stage 2)
+## Durable journal
 
 Pass a `JournalSink` to write each recorded action through to an
 append-only JSONL journal — the cross-language contract between any
@@ -170,7 +174,7 @@ Every record carries identity fields for multi-agent scoping:
  "recovery_args": ["hello.txt"], "recovery_kwargs": {}, "is_error": false}
 ```
 
-* `agent_id` / `session_id` — filter and (later) roll back one agent's stack
+* `agent_id` / `session_id` — filter and roll back one agent's stack
 * `seq` — global monotonic sequence for cross-agent LIFO order
 
 ### Inspect the journal
@@ -182,102 +186,7 @@ uv run reversible history --agent pi --session sess-abc   # one session
 uv run reversible history --json                # raw JSON lines
 ```
 
-## Hooking agents
-
-The library is designed to be hooked at any agent's tool-dispatch boundary.
-Each harness gets a thin adapter; every adapter writes the **same** journal
-format, and the Python engine is the single authority that reads it.
-
-| Harness | Hook |
-| ------- | ---- |
-| **pi** (TypeScript) | global extension — `extensions/pi/reversible/index.ts` |
-| **MCP servers** | `ServerMiddleware` (planned, Stage 5) |
-| **LangChain** | `wrap_tool_call` middleware (planned) |
-| **Pure Python** | `Runtime.call()` directly |
-
-**Design principle for hooks:** assign `seq` at *issue* time, not
-*completion* time. A harness fires a tool call in program order (issue) but
-may complete it out of order (parallel execution). The hook must tag each
-record with a `seq` captured when the call is *issued* (e.g. pi's
-`tool_call`), so rollback retires in deterministic descending `seq`
-regardless of completion order — the reorder-buffer rule. See
-`EDGE_CASES.md` §6.
-
-### Global pi hook
-
-A TypeScript extension records effectful pi tool calls (`write`, `edit`,
-`bash`) into `~/.reversible/journal.jsonl`, tagged with the session id.
-Read-only tools (`read`, `grep`, `find`, `ls`) are never recorded.
-
-Install globally (hooks every pi session):
-
-```bash
-mkdir -p ~/.pi/agent/extensions/reversible
-cp extensions/pi/reversible/index.ts ~/.pi/agent/extensions/reversible/
-```
-
-## Demos
-
-```bash
-uv run python examples/example_tool_module.py   # HOW TO: write your own tools
-uv run python examples/basic.py                  # Stage 1: command → stack
-uv run python examples/multi_agent.py            # Stage 2: 3 agents, 1 journal
-```
-
-### Write your own effectful tools
-
-`examples/example_tool_module.py` is a ready-to-copy template — the analog
-of pi's example extensions. It shows the full pattern:
-
-1. Write the tool function (the forward effect).
-2. Write the recovery function (inverse for R, compensation for K).
-3. Decorate the tool with `@reversible(inverse=..., inverse_args=...)` or
-   `@compensable(compensation=..., compensation_args=...)`.
-4. Execute via `Runtime.call()` (recorded) — read-only tools that aren't
-   decorated are automatically skipped.
-
-```python
-@reversible(inverse=delete_file, inverse_args=("path",))
-def create_file(path: str, content: str) -> None: ...
-```
-
-## Tests
-
-```bash
-uv run pytest
-```
-
-## Project layout
-
-```text
-src/reversible/
-├── action.py        # ActionType (R/K), ActionRecord (+ identity, verify, to_journal)
-├── decorators.py    # @reversible, @compensable (+ verify), @execute
-├── registry.py      # recovery metadata registry (+ by_name, execute policies)
-├── stack.py         # LIFO ActionStack
-├── runtime.py       # Runtime.call / history / rollback (+ sink write-through)
-├── journal.py       # JournalRecord, JournalSink, JSONL reader, cross-language lock
-├── rollback.py      # RollbackEngine, RollbackResult (LIFO, scoped, verified)
-├── recovery_builtin.py  # delete_file, delete_directory, truncate_file, restore_file, noop
-├── cli.py           # uv run reversible history / rollback
-├── logging.py       # stdlib logging
-└── exceptions.py
-extensions/pi/reversible/index.ts   # global pi hook (TypeScript)
-```
-
-## Roadmap
-
-See [`stages.md`](stages.md) for the full staged plan.
-
-1. **Command → Stack** (done) — in-memory recording of effectful calls
-2. **Durable journal + global hook** (done) — persistence, identity, pi hook
-3. **Rollback** (done) — LIFO undo/compensation, scoped per agent/session,
-   verified after each recovery
-4. **Checkpoints** — roll back to a specific point
-5. **MCP / system-agent middleware** — hook long-lived system agents
-6. **Reversibility classifier** (future) — automatic I/R/K/X estimation
-
-## Reversal (Stage 3)
+## Rollback
 
 `Runtime.rollback()` undoes recorded actions in LIFO order, optionally
 scoped by `agent_id` / `session_id`, and verifies each recovery:
@@ -290,6 +199,24 @@ result = runtime.rollback()
 Recovery names in the journal resolve to callables via a name-keyed
 registry. Built-in recoveries (`delete_file`, `delete_directory`,
 `truncate_file`, `restore_file`, `noop`) are registered automatically.
+
+### Checkpoints
+
+`Runtime.checkpoint()` returns a marker for the current stack position;
+`Runtime.rollback_to(checkpoint)` undoes only the work after that point,
+leaving earlier actions intact:
+
+```python
+checkpoint = runtime.checkpoint()
+# ... more work ...
+result = runtime.rollback_to(checkpoint)  # undo only post-checkpoint work
+```
+
+```text
+A, B, CHECKPOINT, C, D
+
+rollback_to(checkpoint) → D⁻¹, C⁻¹   (A, B remain)
+```
 
 ### `@execute` — declared execution policy
 
@@ -308,18 +235,89 @@ Default policy is path-based: `/bin` / `/usr/bin` → `skip`, else
 ### CLI rollback
 
 ```bash
-reversible rollback [--agent X] [--session Y] [--journal PATH]
+uv run reversible rollback [--agent X] [--session Y] [--journal PATH]
+uv run reversible rollback --to <checkpoint>        # undo only post-checkpoint
+```
+
+## Hooking agents
+
+The library is designed to be hooked at any agent's tool-dispatch boundary.
+Each harness gets a thin adapter; every adapter writes the **same** journal
+format, and the Python engine is the single authority that reads it.
+
+| Harness | Hook |
+| ------- | ---- |
+| **pi** (TypeScript) | global extension — `extensions/pi/reversible/index.ts` |
+| **MCP servers** | `ServerMiddleware` (planned) |
+| **LangChain** | `wrap_tool_call` middleware (planned) |
+| **Pure Python** | `Runtime.call()` directly |
+
+**Design principle for hooks:** assign `seq` at *issue* time, not
+*completion* time. A harness fires a tool call in program order (issue) but
+may complete it out of order (parallel execution). The hook must tag each
+record with a `seq` captured when the call is *issued* (e.g. pi's
+`tool_call`), so rollback retires in deterministic descending `seq`
+regardless of completion order — the reorder-buffer rule.
+
+### Global pi hook
+
+A TypeScript extension records effectful pi tool calls (`write`, `edit`,
+`bash`) into `~/.reversible/journal.jsonl`, tagged with the session id.
+Read-only tools (`read`, `grep`, `find`, `ls`) are never recorded.
+
+Install globally (hooks every pi session):
+
+```bash
+mkdir -p ~/.pi/agent/extensions/reversible
+cp extensions/pi/reversible/index.ts ~/.pi/agent/extensions/reversible/
 ```
 
 ## Demos
 
 ```bash
 uv run python examples/example_tool_module.py   # HOW TO: write your own tools
-uv run python examples/basic.py                  # Stage 1: command → stack
-uv run python examples/multi_agent.py            # Stage 2: 3 agents, 1 journal
-uv run python examples/reversal_basic.py         # Stage 3: record → rollback → verify
-uv run python examples/recovery_simple.py        # Stage 3: empty file/dir, append-write
-uv run python examples/sandbox_docker.py        # Stage 3: sandboxed exec, coarse reversal
+uv run python examples/basic.py                  # command → stack
+uv run python examples/multi_agent.py            # 3 agents, 1 journal
+uv run python examples/reversal_basic.py         # record → rollback → verify
+uv run python examples/recovery_simple.py        # empty file/dir, append-write
+uv run python examples/checkpoint_demo.py        # roll back to a checkpoint
+uv run python examples/sandbox_docker.py        # sandboxed exec, coarse reversal
+```
+
+### Write your own effectful tools
+
+`examples/example_tool_module.py` is a ready-to-copy template — the analog
+of pi's example extensions. It shows the full pattern:
+
+1. Write the tool function (the forward effect).
+2. Write the recovery function (inverse for R, compensation for K).
+3. Decorate the tool with `@reversible(inverse=..., inverse_args=...)` or
+   `@compensable(compensation=..., compensation_args=...)`.
+4. Execute via `Runtime.call()` (recorded) — read-only tools that aren't
+   decorated are automatically skipped.
+
+## Tests
+
+```bash
+uv run pytest
+```
+
+## Project layout
+
+```text
+src/reversible/
+├── action.py        # ActionType (R/K), ActionRecord (+ identity, verify, to_journal)
+├── decorators.py    # @reversible, @compensable (+ verify), @execute
+├── registry.py      # recovery metadata registry (+ by_name, execute policies)
+├── stack.py         # LIFO ActionStack
+├── runtime.py       # Runtime.call / history / rollback / checkpoint
+├── journal.py       # JournalRecord, JournalSink, JSONL reader, cross-language lock
+├── rollback.py      # RollbackEngine, RollbackResult (LIFO, scoped, verified)
+├── recovery_builtin.py  # delete_file, delete_directory, truncate_file, restore_file, noop
+├── cli.py           # reversible history / rollback
+├── logging.py       # stdlib logging
+└── exceptions.py
+extensions/pi/reversible/index.ts   # global pi hook (TypeScript)
 ```
 
 ## License

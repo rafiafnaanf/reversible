@@ -23,14 +23,14 @@ class Runtime:
     execute normally but are **not** recorded.
 
     Recovery operations are never executed here — they are only recorded.
-    They run when rollback is explicitly requested (later stage).
+    They run when rollback is explicitly requested.
 
     Identity: ``agent_id`` / ``session_id`` tag every record so a shared
     journal can be filtered and rolled back per agent/session.
 
     Durability: pass ``sink=JournalSink(path)`` to write each recorded
     action through to an append-only JSONL journal. Without a sink the
-    runtime behaves exactly as Stage 1 (in-memory only).
+    runtime is in-memory only.
     """
 
     def __init__(
@@ -126,6 +126,60 @@ class Runtime:
 
     # -- rollback ----------------------------------------------------------
 
+    def checkpoint(self) -> int:
+        """Return a marker for the current stack position.
+
+        The marker is the next ``seq`` that will be assigned (without
+        consuming it). ``rollback_to`` recovers only records with
+        ``seq >= checkpoint``, leaving earlier actions in the stack.
+        """
+        if self._sink is not None:
+            return next_seq(self._sink.path)
+        return getattr(self, "_seq_counter", 0) + 1
+
+    def rollback_to(
+        self,
+        checkpoint: int,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> RollbackResult:
+        """Undo only the actions recorded after ``checkpoint``.
+
+        Recovers records with ``seq >= checkpoint`` (LIFO), leaving earlier
+        actions in the stack. Scoped by identity like :meth:`rollback`.
+        """
+        if self._sink is not None:
+            from .journal import read_journal
+
+            records = read_journal(self._sink.path)
+            records = filter_records(
+                records, agent_id=agent_id, session_id=session_id
+            )
+            target = [r for r in records if r.seq >= checkpoint]
+            engine = RollbackEngine(target)
+            result = engine.rollback()
+            self._stack.clear()
+            recovered = set(result.recovered)
+            for r in records:
+                if str(r.seq) not in recovered:
+                    self._stack.push(r)
+            return result
+
+        records = list(self._stack)
+        if agent_id is not None:
+            records = [r for r in records if r.agent_id == agent_id]
+        if session_id is not None:
+            records = [r for r in records if r.session_id == session_id]
+        target = [r for r in records if r.seq >= checkpoint]
+        engine = RollbackEngine(target)
+        result = engine.rollback()
+        recovered = set(result.recovered)
+        self._stack.clear()
+        for r in records:
+            if str(r.seq) not in recovered:
+                self._stack.push(r)
+        return result
+
     def rollback(
         self,
         agent_id: str | None = None,
@@ -150,14 +204,12 @@ class Runtime:
             )
             engine = RollbackEngine(records)
             result = engine.rollback()
-            # Re-sync the in-memory view to the journal's remaining records.
+            # Re-sync the in-memory view: keep only records not recovered.
             self._stack.clear()
-            remaining = read_journal(self._sink.path)
-            remaining = filter_records(
-                remaining, agent_id=agent_id, session_id=session_id
-            )
-            for r in remaining:
-                self._stack.push(r)
+            recovered = set(result.recovered)
+            for r in records:
+                if str(r.seq) not in recovered:
+                    self._stack.push(r)
             return result
 
         # No sink: roll back the in-memory stack.

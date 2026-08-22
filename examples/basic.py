@@ -1,4 +1,4 @@
-"""Stage 1 demo — command → stack.
+"""Demo — command → stack.
 
 Shows effectful (write/create/send) tool calls being recorded onto the
 action stack, while read-only tools are not recorded. Recovery operations

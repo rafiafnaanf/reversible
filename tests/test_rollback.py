@@ -1,4 +1,4 @@
-"""Tests for the rollback engine (Stage 3)."""
+"""Tests for the rollback engine."""
 
 import os
 

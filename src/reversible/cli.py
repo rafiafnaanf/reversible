@@ -39,6 +39,10 @@ def _build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--agent", dest="agent_id", default=None, help="scope to agent id")
     rb.add_argument("--session", dest="session_id", default=None, help="scope to session id")
     rb.add_argument(
+        "--to", dest="checkpoint", type=int, default=None,
+        help="only undo actions with seq >= this checkpoint",
+    )
+    rb.add_argument(
         "--journal",
         default=str(DEFAULT_JOURNAL),
         help=f"journal path (default: {DEFAULT_JOURNAL})",
@@ -75,6 +79,9 @@ def _cmd_history(args: argparse.Namespace) -> int:
 def _cmd_rollback(args: argparse.Namespace) -> int:
     records = read_journal(args.journal)
     records = filter_records(records, agent_id=args.agent_id, session_id=args.session_id)
+
+    if args.checkpoint is not None:
+        records = [r for r in records if r.seq >= args.checkpoint]
 
     if not records:
         print(f"(no records in {args.journal})")

@@ -1,8 +1,8 @@
 """Reversible Agent Runtime — record effectful agent tool calls.
 
-Stage 1 (command → stack): decorated tool calls are executed and recorded
-onto an action stack with their recovery operations. Recovery is never
-executed during normal execution.
+Decorated tool calls are executed and recorded onto an action stack with
+their recovery operations. Recovery is never executed during normal
+execution.
 """
 
 from .action import ActionRecord, ActionType
