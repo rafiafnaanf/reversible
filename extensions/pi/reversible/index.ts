@@ -70,6 +70,68 @@ function nextSeq(): number {
   return ++seqCounter;
 }
 
+/**
+ * Cross-language advisory lock via O_EXCL lock-file creation.
+ *
+ * Node has no built-in flock, so we mirror the Python JournalLock: atomically
+ * create ``<journal>.lock`` with O_CREAT|O_EXCL, retry until we win, then
+ * append and remove the lock. This serializes the read-max + append critical
+ * section against the Python runtime and other writers.
+ */
+const LOCK_PATH = JOURNAL_PATH + ".lock";
+const LOCK_RETRIES = 1000;
+const LOCK_DELAY_MS = 1;
+
+function withLock<T>(fn: () => T): T {
+  // Synchronous sleep via Atomics.wait (no setTimeoutSync in Node).
+  const sab = new SharedArrayBuffer(4);
+  const int32 = new Int32Array(sab);
+  for (let i = 0; i < LOCK_RETRIES; i++) {
+    try {
+      const fd = fs.openSync(LOCK_PATH, "wx"); // O_CREAT|O_EXCL
+      try {
+        fs.writeSync(fd, String(process.pid));
+        return fn();
+      } finally {
+        fs.closeSync(fd);
+        try { fs.unlinkSync(LOCK_PATH); } catch { /* ignore */ }
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+        // lock held by another writer — wait and retry
+        Atomics.wait(int32, 0, 0, LOCK_DELAY_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`could not acquire journal lock: ${LOCK_PATH}`);
+}
+
+/**
+ * seq assigned at ISSUE time (program order), keyed by toolCallId.
+ *
+ * This is the Reorder-Buffer rule: assign the sequence number when the
+ * tool call is issued (tool_call, in assistant source order), NOT when it
+ * completes (tool_result, arbitrary for parallel execution). Rollback then
+ * retires in descending seq — deterministic regardless of completion order.
+ */
+const issuedSeqs = new Map<string, number>();
+
+function assignSeqAtIssue(toolCallId: string): number {
+  // Take the cross-language lock so the shared seq counter is atomic
+  // across processes (pi extension + Python runtime + MCP middleware).
+  const seq = withLock(() => nextSeq());
+  issuedSeqs.set(toolCallId, seq);
+  return seq;
+}
+
+function takeSeqAtCompletion(toolCallId: string): number {
+  const seq = issuedSeqs.get(toolCallId);
+  issuedSeqs.delete(toolCallId);
+  return seq ?? nextSeq(); // fallback: not issued (shouldn't happen)
+}
+
 function appendJournal(record: Record<string, unknown>): void {
   try {
     fs.mkdirSync(JOURNAL_DIR, { recursive: true });
@@ -116,7 +178,7 @@ function recordResult(event: ToolResultEvent, sessionId: string): void {
   }
 
   appendJournal({
-    seq: nextSeq(),
+    seq: takeSeqAtCompletion(event.toolCallId),
     agent_id: AGENT_ID,
     session_id: sessionId,
     tool: event.toolName,
@@ -152,8 +214,12 @@ function summarizeContent(content: unknown): string {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-  // Preimage capture: snapshot files BEFORE write/edit overwrites them.
+  // Issue: assign seq (program order) + preimage capture, BEFORE execution.
+  // tool_call fires in assistant source order, so seq reflects intent.
   pi.on("tool_call", (event: ToolCallEvent) => {
+    if (TOOL_CLASSES[event.toolName]) {
+      assignSeqAtIssue(event.toolCallId);
+    }
     if (event.toolName === "write" || event.toolName === "edit") {
       const input = event.input as { path?: string };
       if (typeof input.path === "string") {

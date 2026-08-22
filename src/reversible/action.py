@@ -50,6 +50,11 @@ class ActionRecord:
     recovery_kwargs: dict[str, Any]
     result: Any = None
 
+    # -- verification (volatile state, e.g. ASLR) ---------------------------
+    # Optional post-condition: runs after recovery, asserts observable state
+    # matches expectation. Read back the value — don't trust the claim.
+    verify: Callable[..., Any] | None = None
+
     # -- identity (multi-agent journal) ------------------------------------
     agent_id: str = ""
     session_id: str = ""
@@ -59,6 +64,24 @@ class ActionRecord:
     def __str__(self) -> str:
         name = self.action.__name__ if callable(self.action) else self.action
         return f"{self.id} {self.action_type.value} {name}"
+
+    def verify_recovery(self) -> None:
+        """Run the post-condition after recovery, if one is registered.
+
+        Called with the original call's args/kwargs. The predicate returns
+        a truthy value when the state is restored; ``verify_recovery``
+        raises ``AssertionError`` if it returns falsy (recovery silently
+        failed). Used by the rollback engine (Stage 3); callable directly
+        now for testing.
+        """
+        if self.verify is None:
+            return
+        ok = self.verify(*self.args, **self.kwargs)
+        if not ok:
+            raise AssertionError(
+                f"verification failed for {self.action!r}: "
+                f"state was not restored after recovery"
+            )
 
     def to_journal(self) -> dict[str, Any]:
         """Serialize to a pure-JSON journal record.

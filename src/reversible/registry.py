@@ -21,12 +21,18 @@ class ToolMetadata:
     original call's parameters whose values are forwarded to the recovery
     operation. If both are empty, the recovery is called with the original
     args/kwargs unchanged.
+
+    ``verify`` is an optional post-condition: a callable that runs *after*
+    recovery and asserts the observable state matches expectation. It is
+    how volatile state (e.g. ASLR) is verified — read back the value, don't
+    trust the claim that recovery ran.
     """
 
     action_type: ActionType
     recovery: Callable[..., Any]
     recovery_args: tuple[str, ...] = ()
     recovery_kwargs: dict[str, str] = field(default_factory=dict)
+    verify: Callable[..., Any] | None = None
 
 
 class RecoveryRegistry:

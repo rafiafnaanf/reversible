@@ -18,6 +18,7 @@ def reversible(
     inverse: Callable[..., Any],
     inverse_args: tuple[str, ...] = (),
     inverse_kwargs: dict[str, str] | None = None,
+    verify: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a tool as reversible (R): an exact inverse restores prior state.
 
@@ -28,10 +29,15 @@ def reversible(
             kwargs are forwarded unchanged.
         inverse_kwargs: mapping ``{inverse_parameter: original_parameter}``
             for recovery keyword arguments.
+        verify: optional post-condition. A callable that runs *after*
+            recovery and asserts the observable state matches expectation
+            (e.g. read back the value). It is called with the original
+            call's arguments. Raises if the state was not restored.
 
     Example::
 
-        @reversible(inverse=delete_file, inverse_args=("path",))
+        @reversible(inverse=delete_file, inverse_args=("path",),
+                    verify=lambda path: not os.exists(path))
         def create_file(path: str, content: str): ...
     """
 
@@ -41,6 +47,7 @@ def reversible(
             recovery=inverse,
             recovery_args=tuple(inverse_args),
             recovery_kwargs=dict(inverse_kwargs or {}),
+            verify=verify,
         )
         registry.register(tool, metadata)
         return tool
@@ -53,13 +60,14 @@ def compensable(
     compensation: Callable[..., Any],
     compensation_args: tuple[str, ...] = (),
     compensation_kwargs: dict[str, str] | None = None,
+    verify: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a tool as compensable (K): a compensation mitigates its effect.
 
     Compensation does not necessarily restore the exact original state, so
     it is never called an "inverse".
 
-    Args: same shape as :func:`reversible`.
+    Args: same shape as :func:`reversible`, including ``verify``.
 
     Example::
 
@@ -73,6 +81,7 @@ def compensable(
             recovery=compensation,
             recovery_args=tuple(compensation_args),
             recovery_kwargs=dict(compensation_kwargs or {}),
+            verify=verify,
         )
         registry.register(tool, metadata)
         return tool

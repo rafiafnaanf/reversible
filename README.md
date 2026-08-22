@@ -53,6 +53,13 @@ Runtime
   `@compensable(compensation=...)` decorators.
 * **Recovery args preserved** — the record keeps the arguments needed for
   the recovery call, not just the function.
+* **Verification** — an optional `verify` post-condition on any tool that
+  runs after recovery and asserts the observable state was actually
+  restored (read back the value, don't trust the claim).
+* **Concurrency-safe journal** — cross-language lock around seq assignment
+  + append, so concurrent writers never collide on sequence numbers.
+* **Deterministic ordering** — `seq` is assigned at *issue* time (program
+  order), so parallel execution can't scramble rollback order.
 * **Durable journal** — append-only JSONL, the cross-language contract
   between any harness and the engine.
 * **Multi-agent identity** — every record carries `agent_id`, `session_id`,
@@ -117,6 +124,26 @@ def create_file(path: str, content: str) -> None:
     ...   # recovery becomes delete_file(path)
 ```
 
+### Verification
+
+Every tool can declare an optional `verify` predicate — a post-condition
+that runs *after* recovery and asserts the observable state was actually
+restored. This is how restoration is *proven*, not assumed:
+
+```python
+@reversible(
+    inverse=set_aslr,
+    inverse_args=("value",),
+    verify=lambda value: read_aslr() == old_value,   # read back, don't trust
+)
+def set_aslr_tool(value: int) -> None: ...
+```
+
+The predicate receives the original call's arguments and returns truthy
+when the state is restored. If it returns falsy, the runtime raises
+`AssertionError` — catching silent recovery failure. (The rollback engine
+will call this after each recovery; it's callable directly today.)
+
 ## Durable journal (Stage 2)
 
 Pass a `JournalSink` to write each recorded action through to an
@@ -168,6 +195,14 @@ format, and the Python engine is the single authority that reads it.
 | **LangChain** | `wrap_tool_call` middleware (planned) |
 | **Pure Python** | `Runtime.call()` directly |
 
+**Design principle for hooks:** assign `seq` at *issue* time, not
+*completion* time. A harness fires a tool call in program order (issue) but
+may complete it out of order (parallel execution). The hook must tag each
+record with a `seq` captured when the call is *issued* (e.g. pi's
+`tool_call`), so rollback retires in deterministic descending `seq`
+regardless of completion order — the reorder-buffer rule. See
+`EDGE_CASES.md` §6.
+
 ### Global pi hook
 
 A TypeScript extension records effectful pi tool calls (`write`, `edit`,
@@ -216,12 +251,12 @@ uv run pytest
 
 ```text
 src/reversible/
-├── action.py        # ActionType (R/K), ActionRecord (+ identity, to_journal)
-├── decorators.py    # @reversible, @compensable
+├── action.py        # ActionType (R/K), ActionRecord (+ identity, verify, to_journal)
+├── decorators.py    # @reversible, @compensable (+ verify)
 ├── registry.py      # recovery metadata registry
 ├── stack.py         # LIFO ActionStack
 ├── runtime.py       # Runtime.call / history (+ sink write-through)
-├── journal.py       # JournalRecord, JournalSink, JSONL reader, filtering
+├── journal.py       # JournalRecord, JournalSink, JSONL reader, cross-language lock
 ├── cli.py           # uv run reversible history
 ├── logging.py       # stdlib logging
 └── exceptions.py

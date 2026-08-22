@@ -142,28 +142,103 @@ def record_to_journal(record: ActionRecord) -> dict[str, Any]:
     }
 
 
+class JournalLock:
+    """Cross-language advisory lock via O_EXCL lock-file creation.
+
+    The journal is multi-writer (Python runtime, TS pi extension, MCP
+    middleware). To make ``seq`` assignment atomic across languages, writers
+    take an exclusive lock by atomically creating ``<journal>.lock`` with
+    ``O_CREAT|O_EXCL``, retrying until they win. On success they append and
+    then remove the lock file.
+
+    This is a spin-lock (not blocking), which is fine for a prototype: the
+    critical section (read-max + append) is microseconds.
+    """
+
+    def __init__(
+        self,
+        journal_path: str | Path,
+        retries: int = 1000,
+        delay: float = 0.001,
+    ) -> None:
+        self.lock_path = Path(str(journal_path) + ".lock")
+        self.retries = retries
+        self.delay = delay
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        import time
+
+        for _ in range(self.retries):
+            try:
+                self._fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(self._fd, str(os.getpid()).encode())
+                return
+            except FileExistsError:
+                time.sleep(self.delay)
+        raise TimeoutError(f"could not acquire journal lock: {self.lock_path}")
+
+    def release(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+            self._fd = None
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def __enter__(self) -> "JournalLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
+
+
 class JournalSink:
     """Append-only JSONL writer.
 
     Multi-writer safe for short lines on POSIX (``O_APPEND`` + fsync).
+    ``seq`` assignment is serialized via a cross-language lock file.
     """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def append(self, record: ActionRecord | JournalRecord | dict[str, Any]) -> None:
-        data = record.to_dict() if isinstance(record, JournalRecord) else (
-            record.to_journal() if isinstance(record, ActionRecord) else record
-        )
-        line = json.dumps(data, default=str) + "\n"
+    def _write_line(self, line: str) -> None:
+        """Append a single line + fsync. Caller holds the lock."""
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(line)
             fh.flush()
             os.fsync(fh.fileno())
 
-    def append_dict(self, data: dict[str, Any]) -> None:
-        self.append(data)
+    def append(self, record: ActionRecord | JournalRecord | dict[str, Any]) -> None:
+        data = record.to_dict() if isinstance(record, JournalRecord) else (
+            record.to_journal() if isinstance(record, ActionRecord) else record
+        )
+        line = json.dumps(data, default=str) + "\n"
+        with JournalLock(self.path):
+            self._write_line(line)
+
+    def append_with_seq(
+        self, record: ActionRecord | JournalRecord | dict[str, Any]
+    ) -> int:
+        """Atomically assign the next seq and append, under one lock.
+
+        This is the race-free path: the read-max + assign + append happen as
+        one critical section, so no other writer can interleave a duplicate
+        seq. Returns the assigned seq.
+        """
+        data = record.to_dict() if isinstance(record, JournalRecord) else (
+            record.to_journal() if isinstance(record, ActionRecord) else record
+        )
+        with JournalLock(self.path):
+            seq = next_seq(self.path)
+            data["seq"] = seq
+            line = json.dumps(data, default=str) + "\n"
+            self._write_line(line)
+        return seq
 
 
 def read_journal(path: str | Path) -> list[JournalRecord]:

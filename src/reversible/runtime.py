@@ -74,14 +74,18 @@ class Runtime:
             recovery_args=recovery_args,
             recovery_kwargs=recovery_kwargs,
             result=result,
+            verify=metadata.verify,
             agent_id=self._agent_id,
             session_id=self._session_id,
-            seq=self._next_seq(),
+            seq=0,  # assigned atomically by the sink below
         )
         self._stack.push(record)
         if self._sink is not None:
-            self._sink.append(record)
+            seq = self._sink.append_with_seq(record)
+            record.seq = seq
             log.info("[JRNL] appended to %s", self._sink.path)
+        else:
+            record.seq = self._next_seq()
 
         log.info("[EXEC] %s", _format_call(tool, args, kwargs))
         log.info(
