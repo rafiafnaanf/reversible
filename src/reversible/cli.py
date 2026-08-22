@@ -1,8 +1,9 @@
 """Command-line interface for the reversible runtime.
 
-Stage 2 exposes journal inspection::
+Commands::
 
-    uv run reversible history [--agent X] [--session Y] [--journal PATH]
+    reversible history [--agent X] [--session Y] [--journal PATH]
+    reversible rollback [--agent X] [--session Y] [--journal PATH]
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import sys
 from pathlib import Path
 
 from .journal import filter_records, read_journal
+from .rollback import RollbackEngine
 
 DEFAULT_JOURNAL = Path.home() / ".reversible" / "journal.jsonl"
 
@@ -32,6 +34,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"journal path (default: {DEFAULT_JOURNAL})",
     )
     hist.add_argument("--json", action="store_true", help="emit raw JSON lines")
+
+    rb = sub.add_parser("rollback", help="undo recorded actions (LIFO)")
+    rb.add_argument("--agent", dest="agent_id", default=None, help="scope to agent id")
+    rb.add_argument("--session", dest="session_id", default=None, help="scope to session id")
+    rb.add_argument(
+        "--journal",
+        default=str(DEFAULT_JOURNAL),
+        help=f"journal path (default: {DEFAULT_JOURNAL})",
+    )
 
     return parser
 
@@ -61,12 +72,39 @@ def _cmd_history(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rollback(args: argparse.Namespace) -> int:
+    records = read_journal(args.journal)
+    records = filter_records(records, agent_id=args.agent_id, session_id=args.session_id)
+
+    if not records:
+        print(f"(no records in {args.journal})")
+        return 0
+
+    print(f"Rollback {len(records)} action(s) from {args.journal} (LIFO)\n")
+    engine = RollbackEngine(records)
+    result = engine.rollback()
+
+    for seq in result.recovered:
+        print(f"[UNDO] seq {seq} → OK")
+    for seq, err in result.failed:
+        print(f"[UNDO] seq {seq} → FAIL: {err}")
+
+    if result.ok:
+        print("\n[INFO] Rollback complete — environment restored.")
+        return 0
+
+    print("\n[ERROR] Rollback stopped — environment NOT fully restored.")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "history":
         return _cmd_history(args)
+    if args.command == "rollback":
+        return _cmd_rollback(args)
 
     parser.error(f"unknown command: {args.command}")
     return 2

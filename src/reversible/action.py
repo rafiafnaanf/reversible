@@ -68,15 +68,15 @@ class ActionRecord:
     def verify_recovery(self) -> None:
         """Run the post-condition after recovery, if one is registered.
 
-        Called with the original call's args/kwargs. The predicate returns
-        a truthy value when the state is restored; ``verify_recovery``
-        raises ``AssertionError`` if it returns falsy (recovery silently
-        failed). Used by the rollback engine (Stage 3); callable directly
-        now for testing.
+        Called with the recovery's args/kwargs (the same values the recovery
+        operation received). The predicate returns a truthy value when the
+        state is restored; ``verify_recovery`` raises ``AssertionError`` if
+        it returns falsy (recovery silently failed). Used by the rollback
+        engine; callable directly for testing.
         """
         if self.verify is None:
             return
-        ok = self.verify(*self.args, **self.kwargs)
+        ok = self.verify(*self.recovery_args, **self.recovery_kwargs)
         if not ok:
             raise AssertionError(
                 f"verification failed for {self.action!r}: "

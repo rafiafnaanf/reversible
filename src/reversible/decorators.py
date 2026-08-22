@@ -12,6 +12,14 @@ from typing import Any, Callable
 from .action import ActionType
 from .registry import ToolMetadata, registry
 
+# Default execution policies for @execute.
+EXECUTE_POLICY_SKIP = "skip"        # trusted → not logged
+EXECUTE_POLICY_RECORD = "record"    # audit-only, manual reversal
+EXECUTE_POLICY_SANDBOX = "sandbox"  # untrusted → run in docker, nuke on reversal
+
+# Paths treated as trusted system binaries (default policy = skip).
+_TRUSTED_PREFIXES = ("/bin/", "/usr/bin/", "/sbin/", "/usr/sbin/")
+
 
 def reversible(
     *,
@@ -87,3 +95,52 @@ def compensable(
         return tool
 
     return decorate
+
+
+def execute(
+    *,
+    policy: str | None = None,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Mark a tool as binary execution with a declared policy.
+
+    Executing an arbitrary binary is the X (unknown) case — its effects
+    can't be introspected. So execution is *declared*, not auto-detected:
+
+    * ``policy="skip"`` — trusted binary, not logged (e.g. ghidra).
+    * ``policy="record"`` — audit-only K, manual reversal.
+    * ``policy="sandbox"`` — untrusted, run in a sandbox (e.g. docker);
+      reversal is coarse (nuke the sandbox).
+
+    Default policy is path-based: a binary under ``/bin`` / ``/usr/bin``
+    is trusted (``skip``); anywhere else defaults to ``sandbox``. An
+    explicit ``policy`` always wins.
+
+    Example::
+
+        @execute(policy="skip")
+        def run_ghidra(path: str, args: list[str]): ...
+
+        @execute()  # defaults to sandbox for non-system paths
+        def run_binary(path: str, args: list[str]): ...
+    """
+
+    def decorate(tool: Callable[..., Any]) -> Callable[..., Any]:
+        resolved = policy or _default_policy(tool)
+        registry.register_execute(tool, resolved)
+        return tool
+
+    return decorate
+
+
+def _default_policy(tool: Callable[..., Any]) -> str:
+    """Path-based default: trusted system paths → skip, else sandbox."""
+    import inspect
+
+    try:
+        src = inspect.getsource(tool)
+    except (OSError, TypeError):
+        return EXECUTE_POLICY_SANDBOX
+    for prefix in _TRUSTED_PREFIXES:
+        if prefix in src:
+            return EXECUTE_POLICY_SKIP
+    return EXECUTE_POLICY_SANDBOX

@@ -5,10 +5,11 @@ from __future__ import annotations
 import inspect
 from typing import Any, Callable
 
-from .action import ActionRecord
-from .journal import JournalSink, next_seq
+from .action import ActionRecord, ActionType
+from .journal import JournalSink, filter_records, next_seq
 from .logging import get_logger
 from .registry import ToolMetadata, registry
+from .rollback import RollbackEngine, RollbackResult
 from .stack import ActionStack
 
 log = get_logger()
@@ -51,30 +52,49 @@ class Runtime:
         """Execute ``tool`` and, if registered, record it on the stack.
 
         Returns the tool's original result.
+
+        ``@execute``-decorated tools follow their declared policy:
+        ``skip`` → not recorded; ``record`` / ``sandbox`` → recorded as
+        record-only K (audit; reversal is manual or coarse).
         """
         metadata = registry.lookup(tool)
+        policy = registry.execute_policy(tool)
 
-        if metadata is None:
+        if metadata is None and policy is None:
             log.debug("[SKIP] %s(...) — not registered, not recorded", tool.__name__)
+            return tool(*args, **kwargs)
+
+        if policy == "skip":
+            log.debug("[SKIP] %s(...) — @execute policy=skip, not recorded", tool.__name__)
             return tool(*args, **kwargs)
 
         result = tool(*args, **kwargs)
 
-        recovery_args, recovery_kwargs = self._resolve_recovery_args(
-            metadata, tool, args, kwargs
-        )
+        # @execute tools: record-only K (no auto-recovery).
+        if metadata is None:
+            recovery_args, recovery_kwargs = (), {}
+            action_type = ActionType.COMPENSABLE
+            recovery = registry.lookup_by_name("noop") or (lambda *a, **k: None)
+            verify = None
+        else:
+            recovery_args, recovery_kwargs = self._resolve_recovery_args(
+                metadata, tool, args, kwargs
+            )
+            action_type = metadata.action_type
+            recovery = metadata.recovery
+            verify = metadata.verify
 
         record = ActionRecord(
             id=self._next_id(),
             action=tool,
             args=args,
             kwargs=kwargs,
-            action_type=metadata.action_type,
-            recovery=metadata.recovery,
+            action_type=action_type,
+            recovery=recovery,
             recovery_args=recovery_args,
             recovery_kwargs=recovery_kwargs,
             result=result,
-            verify=metadata.verify,
+            verify=verify,
             agent_id=self._agent_id,
             session_id=self._session_id,
             seq=0,  # assigned atomically by the sink below
@@ -90,8 +110,8 @@ class Runtime:
         log.info("[EXEC] %s", _format_call(tool, args, kwargs))
         log.info(
             "[LOG ] %s → %s",
-            metadata.action_type.value,
-            _format_call(metadata.recovery, recovery_args, recovery_kwargs),
+            action_type.value,
+            _format_call(recovery, recovery_args, recovery_kwargs),
         )
         return result
 
@@ -103,6 +123,58 @@ class Runtime:
 
     def __len__(self) -> int:
         return len(self._stack)
+
+    # -- rollback ----------------------------------------------------------
+
+    def rollback(
+        self,
+        agent_id: str | None = None,
+        session_id: str | None = None,
+    ) -> RollbackResult:
+        """Undo recorded actions in LIFO order, optionally scoped by identity.
+
+        With a sink, reads the journal and recovers the matching records
+        (descending ``seq``). Without a sink, recovers the in-memory stack.
+
+        Each recovery is verified (``verify_recovery``) before the action is
+        dropped. On failure the engine stops, keeps the failed action, and
+        returns a ``RollbackResult`` — it never claims the environment was
+        restored.
+        """
+        if self._sink is not None:
+            from .journal import read_journal
+
+            records = read_journal(self._sink.path)
+            records = filter_records(
+                records, agent_id=agent_id, session_id=session_id
+            )
+            engine = RollbackEngine(records)
+            result = engine.rollback()
+            # Re-sync the in-memory view to the journal's remaining records.
+            self._stack.clear()
+            remaining = read_journal(self._sink.path)
+            remaining = filter_records(
+                remaining, agent_id=agent_id, session_id=session_id
+            )
+            for r in remaining:
+                self._stack.push(r)
+            return result
+
+        # No sink: roll back the in-memory stack.
+        records = list(self._stack)
+        if agent_id is not None:
+            records = [r for r in records if r.agent_id == agent_id]
+        if session_id is not None:
+            records = [r for r in records if r.session_id == session_id]
+        engine = RollbackEngine(records)
+        result = engine.rollback()
+        # Drop recovered records from the stack; keep failed ones.
+        recovered = set(result.recovered)
+        self._stack.clear()
+        for r in records:
+            if str(r.seq) not in recovered:
+                self._stack.push(r)
+        return result
 
     # -- internals ---------------------------------------------------------
 

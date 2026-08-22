@@ -252,12 +252,14 @@ uv run pytest
 ```text
 src/reversible/
 ├── action.py        # ActionType (R/K), ActionRecord (+ identity, verify, to_journal)
-├── decorators.py    # @reversible, @compensable (+ verify)
-├── registry.py      # recovery metadata registry
+├── decorators.py    # @reversible, @compensable (+ verify), @execute
+├── registry.py      # recovery metadata registry (+ by_name, execute policies)
 ├── stack.py         # LIFO ActionStack
-├── runtime.py       # Runtime.call / history (+ sink write-through)
+├── runtime.py       # Runtime.call / history / rollback (+ sink write-through)
 ├── journal.py       # JournalRecord, JournalSink, JSONL reader, cross-language lock
-├── cli.py           # uv run reversible history
+├── rollback.py      # RollbackEngine, RollbackResult (LIFO, scoped, verified)
+├── recovery_builtin.py  # delete_file, delete_directory, truncate_file, restore_file, noop
+├── cli.py           # uv run reversible history / rollback
 ├── logging.py       # stdlib logging
 └── exceptions.py
 extensions/pi/reversible/index.ts   # global pi hook (TypeScript)
@@ -269,10 +271,56 @@ See [`stages.md`](stages.md) for the full staged plan.
 
 1. **Command → Stack** (done) — in-memory recording of effectful calls
 2. **Durable journal + global hook** (done) — persistence, identity, pi hook
-3. **Rollback** — LIFO undo/compensation, scoped per agent/session
+3. **Rollback** (done) — LIFO undo/compensation, scoped per agent/session,
+   verified after each recovery
 4. **Checkpoints** — roll back to a specific point
 5. **MCP / system-agent middleware** — hook long-lived system agents
 6. **Reversibility classifier** (future) — automatic I/R/K/X estimation
+
+## Reversal (Stage 3)
+
+`Runtime.rollback()` undoes recorded actions in LIFO order, optionally
+scoped by `agent_id` / `session_id`, and verifies each recovery:
+
+```python
+result = runtime.rollback()
+# result.ok — True if all recoveries succeeded and verified
+```
+
+Recovery names in the journal resolve to callables via a name-keyed
+registry. Built-in recoveries (`delete_file`, `delete_directory`,
+`truncate_file`, `restore_file`, `noop`) are registered automatically.
+
+### `@execute` — declared execution policy
+
+Executing an arbitrary binary is the X (unknown) case — its effects can't
+be introspected. So execution is *declared*, not auto-detected:
+
+```python
+@execute(policy="skip")      # trusted (ghidra) → not logged
+@execute(policy="record")    # audit-only K, manual reversal
+@execute(policy="sandbox")   # untrusted → run in docker, nuke on reversal
+```
+
+Default policy is path-based: `/bin` / `/usr/bin` → `skip`, else
+`sandbox`. An explicit `policy` wins.
+
+### CLI rollback
+
+```bash
+reversible rollback [--agent X] [--session Y] [--journal PATH]
+```
+
+## Demos
+
+```bash
+uv run python examples/example_tool_module.py   # HOW TO: write your own tools
+uv run python examples/basic.py                  # Stage 1: command → stack
+uv run python examples/multi_agent.py            # Stage 2: 3 agents, 1 journal
+uv run python examples/reversal_basic.py         # Stage 3: record → rollback → verify
+uv run python examples/recovery_simple.py        # Stage 3: empty file/dir, append-write
+uv run python examples/sandbox_docker.py        # Stage 3: sandboxed exec, coarse reversal
+```
 
 ## License
 

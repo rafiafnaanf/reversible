@@ -6,11 +6,13 @@ executed during normal execution.
 """
 
 from .action import ActionRecord, ActionType
-from .decorators import compensable, reversible
+from .decorators import compensable, execute, reversible
 from .exceptions import ReversibleError
 from .journal import JournalRecord, JournalSink, filter_records, next_seq, read_journal, record_to_journal
 from .logging import configure_logging, get_logger
+from .recovery_builtin import register_builtin_recoveries
 from .registry import RecoveryRegistry, ToolMetadata, registry
+from .rollback import RollbackEngine, RollbackError, RollbackResult
 from .runtime import Runtime
 from .stack import ActionStack
 
@@ -20,17 +22,22 @@ __all__ = [
     "ActionType",
     "JournalRecord",
     "JournalSink",
-    "ReversibleError",
     "RecoveryRegistry",
+    "RollbackEngine",
+    "RollbackError",
+    "RollbackResult",
+    "ReversibleError",
     "Runtime",
     "ToolMetadata",
     "compensable",
     "configure_logging",
+    "execute",
     "filter_records",
     "get_logger",
     "next_seq",
     "read_journal",
     "record_to_journal",
+    "register_builtin_recoveries",
     "registry",
     "reversible",
 ]
