@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .action import ActionType
+from .logging import get_logger
+
+log = get_logger()
 
 
 @dataclass(frozen=True)
@@ -84,8 +87,20 @@ class RecoveryRegistry:
         modules/agents (e.g. ``coding-agent`` vs ``ghidra-mcp``), so two
         modules with a recovery named ``X`` never overwrite each other.
         The empty namespace holds global built-ins (``delete_file``, …).
+
+        Warns if a same-named recovery already exists in the namespace and
+        is being replaced (a likely namespace collision) - so the silent
+        overwrite becomes visible instead of causing a wrong rollback later.
         """
-        self._by_name.setdefault(namespace, {})[name] = fn
+        ns = self._by_name.setdefault(namespace, {})
+        existing = ns.get(name)
+        if existing is not None and existing is not fn:
+            log.warning(
+                "[REG] overwriting recovery %r in namespace %r "
+                "(previous: %r) - possible namespace collision",
+                name, namespace, existing,
+            )
+        ns[name] = fn
 
     def lookup_by_name(
         self, name: str, namespace: str = ""

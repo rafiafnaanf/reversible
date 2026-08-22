@@ -96,3 +96,38 @@ def test_record_serializes_namespace(tmp_path):
     records = read_journal(sink.path)
     assert records[0].namespace == "my-ns"
     assert records[0].recovery == "delete_file"
+
+
+def test_register_recovery_warns_on_collision(caplog):
+    """Overwriting a same-named recovery in a namespace warns (not silent)."""
+    import logging
+
+    from reversible import registry as reg
+
+    def fn_a(path: str) -> None:
+        return None
+
+    def fn_b(path: str) -> None:
+        return None
+
+    with caplog.at_level(logging.WARNING, logger="reversible"):
+        reg.register_recovery("collide", fn_a, namespace="ns-warn")
+        reg.register_recovery("collide", fn_b, namespace="ns-warn")
+
+    assert any("overwriting recovery" in r.message for r in caplog.records)
+
+
+def test_register_recovery_same_fn_no_warning(caplog):
+    """Re-registering the SAME function under a name is not a collision."""
+    import logging
+
+    from reversible import registry as reg
+
+    def fn(path: str) -> None:
+        return None
+
+    with caplog.at_level(logging.WARNING, logger="reversible"):
+        reg.register_recovery("same", fn, namespace="ns-ok")
+        reg.register_recovery("same", fn, namespace="ns-ok")
+
+    assert not any("overwriting recovery" in r.message for r in caplog.records)
