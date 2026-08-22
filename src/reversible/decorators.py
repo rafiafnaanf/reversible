@@ -27,6 +27,7 @@ def reversible(
     inverse_args: tuple[str, ...] = (),
     inverse_kwargs: dict[str, str] | None = None,
     verify: Callable[..., Any] | None = None,
+    namespace: str = "",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a tool as reversible (R): an exact inverse restores prior state.
 
@@ -41,6 +42,8 @@ def reversible(
             recovery and asserts the observable state matches expectation
             (e.g. read back the value). It is called with the original
             call's arguments. Raises if the state was not restored.
+        namespace: optional scope for this tool's recovery, so same-named
+            recoveries from different modules/agents don't collide.
 
     Example::
 
@@ -58,6 +61,9 @@ def reversible(
             verify=verify,
         )
         registry.register(tool, metadata)
+        # Auto-register the inverse by name in the namespace, so journal
+        # records (storing the function name) resolve at rollback time.
+        registry.register_recovery(inverse.__name__, inverse, namespace=namespace)
         return tool
 
     return decorate
@@ -69,13 +75,15 @@ def compensable(
     compensation_args: tuple[str, ...] = (),
     compensation_kwargs: dict[str, str] | None = None,
     verify: Callable[..., Any] | None = None,
+    namespace: str = "",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Mark a tool as compensable (K): a compensation mitigates its effect.
 
     Compensation does not necessarily restore the exact original state, so
     it is never called an "inverse".
 
-    Args: same shape as :func:`reversible`, including ``verify``.
+    Args: same shape as :func:`reversible`, including ``verify`` and
+    ``namespace``.
 
     Example::
 
@@ -92,6 +100,9 @@ def compensable(
             verify=verify,
         )
         registry.register(tool, metadata)
+        registry.register_recovery(
+            compensation.__name__, compensation, namespace=namespace
+        )
         return tool
 
     return decorate

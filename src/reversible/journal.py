@@ -44,6 +44,7 @@ class JournalRecord:
     is_error: bool = False
     result_summary: str = ""
     ts: str = ""
+    namespace: str = ""
 
     def __str__(self) -> str:
         return f"{self.seq:03d} {self.action_type} {self.tool}"
@@ -62,6 +63,7 @@ class JournalRecord:
             "is_error": self.is_error,
             "result_summary": self.result_summary,
             "ts": self.ts,
+            "namespace": self.namespace,
         }
 
     @classmethod
@@ -79,6 +81,7 @@ class JournalRecord:
             is_error=bool(data.get("is_error", False)),
             result_summary=str(data.get("result_summary", "")),
             ts=str(data.get("ts", "")),
+            namespace=str(data.get("namespace", "")),
         )
 
 
@@ -142,6 +145,7 @@ def record_to_journal(record: ActionRecord) -> dict[str, Any]:
         "is_error": False,
         "result_summary": _summary(record.result),
         "ts": record.ts or _now_iso(),
+        "namespace": record.namespace,
     }
 
 

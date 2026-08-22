@@ -61,6 +61,11 @@ class ActionRecord:
     seq: int = 0
     ts: str = ""
 
+    # -- namespace (which module/agent this recovery belongs to) -----------
+    # Separates same-named recoveries from different modules/agents so they
+    # never collide in the name-keyed registry.
+    namespace: str = ""
+
     def __str__(self) -> str:
         name = self.action.__name__ if callable(self.action) else self.action
         return f"{self.id} {self.action_type.value} {name}"

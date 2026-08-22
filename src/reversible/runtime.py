@@ -38,12 +38,14 @@ class Runtime:
         *,
         agent_id: str = "",
         session_id: str = "",
+        namespace: str = "",
         sink: JournalSink | None = None,
     ) -> None:
         self._stack = ActionStack()
         self._counter = 0
         self._agent_id = agent_id
         self._session_id = session_id
+        self._namespace = namespace
         self._sink = sink
 
     # -- recording ---------------------------------------------------------
@@ -99,6 +101,7 @@ class Runtime:
             verify=verify,
             agent_id=self._agent_id,
             session_id=self._session_id,
+            namespace=self._namespace,
             seq=0,  # assigned atomically by the sink below
         )
         self._stack.push(record)

@@ -51,7 +51,7 @@ class RecoveryRegistry:
 
     def __init__(self) -> None:
         self._tools: dict[Callable[..., Any], ToolMetadata] = {}
-        self._by_name: dict[str, Callable[..., Any]] = {}
+        self._by_name: dict[str, dict[str, Callable[..., Any]]] = {}
         self._execute_policies: dict[Callable[..., Any], str] = {}
 
     def register(self, tool: Callable[..., Any], metadata: ToolMetadata) -> None:
@@ -75,16 +75,31 @@ class RecoveryRegistry:
 
     # -- name-keyed recovery operations ------------------------------------
 
-    def register_recovery(self, name: str, fn: Callable[..., Any]) -> None:
-        """Register a recovery operation by name (resolvable at rollback)."""
-        self._by_name[name] = fn
+    def register_recovery(
+        self, name: str, fn: Callable[..., Any], namespace: str = ""
+    ) -> None:
+        """Register a recovery operation by name, scoped to a namespace.
 
-    def lookup_by_name(self, name: str) -> Callable[..., Any] | None:
-        """Resolve a recovery name (from a journal record) to a callable."""
-        return self._by_name.get(name)
+        ``namespace`` separates same-named recoveries from different
+        modules/agents (e.g. ``coding-agent`` vs ``ghidra-mcp``), so two
+        modules with a recovery named ``X`` never overwrite each other.
+        The empty namespace holds global built-ins (``delete_file``, …).
+        """
+        self._by_name.setdefault(namespace, {})[name] = fn
+
+    def lookup_by_name(
+        self, name: str, namespace: str = ""
+    ) -> Callable[..., Any] | None:
+        """Resolve a recovery name within a namespace, then global."""
+        ns = self._by_name.get(namespace)
+        if ns and name in ns:
+            return ns[name]
+        # Fall back to the global (empty) namespace for built-ins.
+        g = self._by_name.get("")
+        return g.get(name) if g else None
 
     def __len__(self) -> int:
-        return len(self._tools) + len(self._by_name)
+        return len(self._tools) + sum(len(v) for v in self._by_name.values())
 
 
 # Default global registry shared by the decorators and the runtime.

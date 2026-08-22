@@ -43,11 +43,16 @@ class RollbackResult:
 
 def _resolve_recovery(
     recovery: Callable[..., Any] | str,
+    namespace: str = "",
 ) -> Callable[..., Any] | None:
-    """Resolve a recovery name to a callable via the name-keyed registry."""
+    """Resolve a recovery name to a callable via the name-keyed registry.
+
+    Resolves within ``namespace`` first, then falls back to the global
+    (built-in) namespace.
+    """
     if callable(recovery):
         return recovery
-    return registry.lookup_by_name(str(recovery))
+    return registry.lookup_by_name(str(recovery), namespace=namespace)
 
 
 class RollbackEngine:
@@ -82,7 +87,7 @@ class RollbackEngine:
         return result
 
     def _recover_one(self, record: ActionRecord | JournalRecord) -> None:
-        recovery = _resolve_recovery(record.recovery)
+        recovery = _resolve_recovery(record.recovery, namespace=record.namespace)
         if recovery is None:
             raise RollbackError(
                 record,
