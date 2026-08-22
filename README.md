@@ -302,7 +302,6 @@ uv run python examples/checkpoint_demo.py        # roll back to a checkpoint
 uv run python examples/sandbox_docker.py        # sandboxed exec, coarse reversal
 uv run python examples/presentation_benchmark.py  # benchmark: run -> revert -> verify
 uv run python examples/pi_hook_demo.py            # pi hook -> journal -> CLI rollback
-uv run python examples/presentation_story.py       # interactive security story
 ```
 
 ### Write your own effectful tools
@@ -335,12 +334,6 @@ verification.
 `pi_hook_demo.py` shows the real integration path: journal entries in the
 pi-extension format, then the actual CLI `reversible rollback`, then
 verifies the files are gone.
-
-`presentation_story.py` is an **interactive cybersecurity story** (SOC
-analyst responding to a suspected compromise). It pauses at each step so
-you can narrate live: the agent quarantines a file (R), blocks an IP (K),
-hardens a config (R, preimage), then makes a mistake and reverts down the
-stack, verifying every reversal with `[PASS]` checks.
 
 ## Tests
 
