@@ -29,6 +29,11 @@ class ToolMetadata:
     recovery and asserts the observable state matches expectation. It is
     how volatile state (e.g. ASLR) is verified - read back the value, don't
     trust the claim that recovery ran.
+
+    ``namespace`` is the scope the tool's recovery was registered under
+    (``None`` = unset, defer to the Runtime's namespace). The record's
+    namespace decides recovery resolution at rollback time, so this - not
+    the caller's Runtime - is authoritative when they disagree.
     """
 
     action_type: ActionType
@@ -36,6 +41,7 @@ class ToolMetadata:
     recovery_args: tuple[str, ...] = ()
     recovery_kwargs: dict[str, str] = field(default_factory=dict)
     verify: Callable[..., Any] | None = None
+    namespace: str | None = None
 
 
 class RecoveryRegistry:

@@ -20,9 +20,9 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
-from .action import ActionRecord, ActionType
+from .action import ActionRecord
 from .logging import get_logger
 
 log = get_logger()
@@ -159,8 +159,12 @@ class JournalLock:
     then remove the lock file.
 
     This is a spin-lock (not blocking), which is fine for a prototype: the
-    critical section (read-max + append) is microseconds.
+    critical section (read-max + append) is microseconds. A lock file older
+    than ``STALE_LOCK_SECONDS`` is taken over once - a crashed writer must
+    not wedge the journal forever.
     """
+
+    STALE_LOCK_SECONDS = 5.0
 
     def __init__(
         self,
@@ -176,14 +180,33 @@ class JournalLock:
     def acquire(self) -> None:
         import time
 
+        took_over_stale = False
         for _ in range(self.retries):
             try:
                 self._fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 os.write(self._fd, str(os.getpid()).encode())
                 return
             except FileExistsError:
+                # A crashed writer leaves the lock behind forever; take over
+                # a sufficiently old lock file once, then wait normally.
+                if not took_over_stale and self._lock_is_stale():
+                    try:
+                        self.lock_path.unlink()
+                        took_over_stale = True
+                        continue
+                    except FileNotFoundError:
+                        continue
                 time.sleep(self.delay)
         raise TimeoutError(f"could not acquire journal lock: {self.lock_path}")
+
+    def _lock_is_stale(self) -> bool:
+        import time
+
+        try:
+            age = time.time() - self.lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return False  # released between our EEXIST and the stat: retry
+        return age > self.STALE_LOCK_SECONDS
 
     def release(self) -> None:
         if self._fd is not None:
@@ -210,7 +233,7 @@ class JournalSink:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def _write_line(self, line: str) -> None:
@@ -221,6 +244,12 @@ class JournalSink:
             os.fsync(fh.fileno())
 
     def append(self, record: ActionRecord | JournalRecord | dict[str, Any]) -> None:
+        """Append a fully-formed record (replay/repair path).
+
+        Does NOT assign or validate ``seq``: duplicates and gaps are the
+        caller's responsibility. Writers that need a seq use
+        :meth:`append_with_seq`.
+        """
         data = record.to_dict() if isinstance(record, JournalRecord) else (
             record.to_journal() if isinstance(record, ActionRecord) else record
         )
@@ -238,7 +267,7 @@ class JournalSink:
         seq. Returns the assigned seq.
         """
         data = record.to_dict() if isinstance(record, JournalRecord) else (
-            record.to_journal() if isinstance(record, ActionRecord) else record
+            record.to_journal() if isinstance(record, ActionRecord) else dict(record)
         )
         with JournalLock(self.path):
             seq = next_seq(self.path)
@@ -248,16 +277,18 @@ class JournalSink:
         return seq
 
 
-def read_journal(path: str | Path) -> list[JournalRecord]:
-    """Read all records from a journal file, oldest first.
+def _read_lines(path: str | Path) -> list[dict[str, Any]]:
+    """Read every parseable JSON object line, oldest first.
 
-    Rollback-marker lines (``{"type": "rollback", ...}``) are skipped:
-    they are not actions, they mark actions as already undone.
+    Includes rollback markers and seq reservations (callers filter).
+    Malformed lines are skipped with a warning; non-object lines (e.g. a
+    torn ``[1, 2]``) are skipped too - they must never crash a writer,
+    because ``append_with_seq`` reads inside the lock.
     """
-    records: list[JournalRecord] = []
-    p = Path(path)
+    p = Path(path).expanduser()
     if not p.exists():
-        return records
+        return []
+    out: list[dict[str, Any]] = []
     with open(p, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
@@ -268,33 +299,48 @@ def read_journal(path: str | Path) -> list[JournalRecord]:
             except json.JSONDecodeError as exc:
                 log.warning("[JRNL] skipping malformed line: %s", exc)
                 continue
-            if data.get("type") == "rollback":
+            if not isinstance(data, dict):
+                log.warning("[JRNL] skipping non-object line: %.60s", line)
                 continue
-            try:
-                records.append(JournalRecord.from_dict(data))
-            except (ValueError, KeyError, TypeError) as exc:
-                log.warning("[JRNL] skipping malformed line: %s", exc)
+            out.append(data)
+    return out
+
+
+def read_journal(path: str | Path) -> list[JournalRecord]:
+    """Read all action records from a journal file, oldest first.
+
+    Rollback markers and seq reservations are skipped: they are not
+    actions. Reservations mark seqs held by in-flight tool calls (issued
+    under the lock, completed later) - see ``reserved_seqs``.
+    """
+    records: list[JournalRecord] = []
+    for data in _read_lines(path):
+        if data.get("type") in ("rollback", "reserved"):
+            continue
+        try:
+            records.append(JournalRecord.from_dict(data))
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("[JRNL] skipping malformed record: %s", exc)
     return records
+
+
+def reserved_seqs(path: str | Path) -> set[int]:
+    """Seqs reserved at issue time by in-flight tool calls.
+
+    A reservation is durable (written under the lock when the seq is
+    assigned), so no other writer can reuse the seq even though the full
+    record only lands at completion.
+    """
+    return {
+        d["seq"]
+        for d in _read_lines(path)
+        if d.get("type") == "reserved" and isinstance(d.get("seq"), int)
+    }
 
 
 def read_rollback_markers(path: str | Path) -> list[dict[str, Any]]:
     """Read the rollback markers appended by previous rollback runs."""
-    markers: list[dict[str, Any]] = []
-    p = Path(path)
-    if not p.exists():
-        return markers
-    with open(p, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if data.get("type") == "rollback":
-                markers.append(data)
-    return markers
+    return [d for d in _read_lines(path) if d.get("type") == "rollback"]
 
 
 def tombstoned_seqs(path: str | Path) -> set[str]:
@@ -330,16 +376,22 @@ def mark_rolled_back(
         "ts": _now_iso(),
     }
     with JournalLock(path):
-        with open(Path(path), "a", encoding="utf-8") as fh:
+        with open(Path(path).expanduser(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(marker, default=str) + "\n")
             fh.flush()
             os.fsync(fh.fileno())
 
 
 def next_seq(path: str | Path) -> int:
-    """Return the next global sequence number (max existing + 1)."""
-    records = read_journal(path)
-    return (max((r.seq for r in records), default=0)) + 1
+    """Return the next global sequence number (max existing + 1).
+
+    Counts both committed records and outstanding seq reservations: a
+    reserved-but-not-yet-completed tool call holds its seq, so no other
+    writer can be assigned it (the ROB rule made durable).
+    """
+    seqs = [r.seq for r in read_journal(path)]
+    seqs.extend(reserved_seqs(path))
+    return (max(seqs, default=0)) + 1
 
 
 def filter_records(

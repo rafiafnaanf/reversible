@@ -2,7 +2,8 @@
 
 import os
 
-from reversible import JournalSink, Runtime, reversible
+from reversible import JournalSink, Runtime, read_journal, reversible
+from reversible.journal import tombstoned_seqs
 
 
 def _make_runtime(tmp_path, sink=None, agent_id="demo"):
@@ -56,7 +57,14 @@ def test_checkpoint_with_sink(tmp_path):
     assert result.ok
     assert not os.path.exists(tmp_path / "b.txt")
     assert os.path.exists(tmp_path / "a.txt")
-    assert len(runtime) == 1
+    # Journal is the source of truth in sink mode: one pending record (b's
+    # seq is tombstoned), and the in-memory stack is not repopulated.
+    pending = [
+        r for r in read_journal(sink.path)
+        if str(r.seq) not in tombstoned_seqs(sink.path)
+    ]
+    assert len(pending) == 1
+    assert len(runtime) == 0
 
 
 def test_checkpoint_at_start_rolls_back_everything(tmp_path):

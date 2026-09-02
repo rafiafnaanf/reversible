@@ -40,15 +40,16 @@ def reversible(
             for recovery keyword arguments.
         verify: optional post-condition. A callable that runs *after*
             recovery and asserts the observable state matches expectation
-            (e.g. read back the value). It is called with the original
-            call's arguments. Raises if the state was not restored.
+            (e.g. read back the value). It is called with the recovery's
+            args/kwargs (the same values the recovery received). Raises if
+            the state was not restored.
         namespace: optional scope for this tool's recovery, so same-named
             recoveries from different modules/agents don't collide.
 
     Example::
 
         @reversible(inverse=delete_file, inverse_args=("path",),
-                    verify=lambda path: not os.exists(path))
+                    verify=lambda path: not os.path.exists(path))
         def create_file(path: str, content: str): ...
     """
 
@@ -59,6 +60,7 @@ def reversible(
             recovery_args=tuple(inverse_args),
             recovery_kwargs=dict(inverse_kwargs or {}),
             verify=verify,
+            namespace=namespace or None,
         )
         registry.register(tool, metadata)
         # Auto-register the inverse by name in the namespace, so journal
@@ -98,6 +100,7 @@ def compensable(
             recovery_args=tuple(compensation_args),
             recovery_kwargs=dict(compensation_kwargs or {}),
             verify=verify,
+            namespace=namespace or None,
         )
         registry.register(tool, metadata)
         registry.register_recovery(

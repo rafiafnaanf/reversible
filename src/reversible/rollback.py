@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from .action import ActionRecord
 from .exceptions import ReversibleError
-from .journal import JournalRecord, filter_records, read_journal
+from .journal import JournalRecord
 from .logging import get_logger
 from .registry import registry
 
@@ -30,7 +30,13 @@ class RollbackError(ReversibleError):
 
 @dataclass
 class RollbackResult:
-    """Structured outcome of a rollback pass."""
+    """Structured outcome of a rollback pass.
+
+    ``recovered``: seqs undone. ``failed``: (seq, error) pairs - these stay
+    pending for retry. ``stopped`` is a slight misnomer under
+    ``continue_on_error`` (the pass kept going): read it as "not fully
+    clean", i.e. ``ok`` is False.
+    """
 
     recovered: list[str] = field(default_factory=list)  # seqs recovered
     failed: list[tuple[str, str]] = field(default_factory=list)  # (seq, error)
@@ -83,12 +89,29 @@ class RollbackEngine:
         self._records = sorted(records, key=lambda r: r.seq, reverse=True)
         self._pending: list[ActionRecord | JournalRecord] = list(self._records)
 
-    def rollback(self) -> RollbackResult:
+    def rollback(
+        self, on_recovered: Callable[[str], None] | None = None
+    ) -> RollbackResult:
+        """Run recoveries LIFO; optionally mark each seq as it is undone.
+
+        ``on_recovered`` is called with each recovered seq immediately after
+        its recovery succeeds - the CLI/runtime use it to write rollback
+        markers incrementally, so a run killed mid-pass keeps the markers
+        for the seqs it already completed.
+        """
         result = RollbackResult()
         for record in self._pending:
             try:
                 self._recover_one(record)
                 result.recovered.append(str(record.seq))
+                if on_recovered is not None:
+                    try:
+                        on_recovered(str(record.seq))
+                    except Exception:  # noqa: BLE001 - marking is best-effort
+                        log.exception(
+                            "[UNDO] failed to write rollback marker for %s",
+                            record.seq,
+                        )
                 log.info("[UNDO] %s → OK", record)
             except Exception as exc:  # noqa: BLE001
                 result.failed.append((str(record.seq), str(exc)))

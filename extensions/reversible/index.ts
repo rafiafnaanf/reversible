@@ -78,6 +78,8 @@ let seqCounter = 0;
 
 function nextSeq(journalPath: string): number {
   // Best-eff: read tail of journal for the max seq, then increment.
+  // Rollback markers carry no seq; reserved lines do - both handled by
+  // the tail scan (first line from the end with a finite seq wins).
   try {
     if (fs.existsSync(journalPath)) {
       const lines = fs.readFileSync(journalPath, "utf8").trim().split("\n").filter(Boolean);
@@ -97,16 +99,20 @@ function nextSeq(journalPath: string): number {
  *
  * Node has no built-in flock, so we mirror the Python JournalLock: atomically
  * create ``<journal>.lock`` with O_CREAT|O_EXCL, retry until we win, then
- * append and remove the lock. This serializes the read-max + append critical
- * section against the Python runtime and other writers.
+ * work and remove the lock. This serializes the read-max + append critical
+ * section against the Python runtime and other writers. A lock file older
+ * than STALE_LOCK_SECONDS is taken over once - a crashed writer must not
+ * wedge the journal forever.
  */
 const LOCK_RETRIES = 1000;
 const LOCK_DELAY_MS = 1;
+const STALE_LOCK_MS = 5_000;
 
 function withLock<T>(lockPath: string, fn: () => T): T {
   // Synchronous sleep via Atomics.wait (no setTimeoutSync in Node).
   const sab = new SharedArrayBuffer(4);
   const int32 = new Int32Array(sab);
+  let tookOverStale = false;
   for (let i = 0; i < LOCK_RETRIES; i++) {
     try {
       const fd = fs.openSync(lockPath, "wx"); // O_CREAT|O_EXCL
@@ -119,7 +125,16 @@ function withLock<T>(lockPath: string, fn: () => T): T {
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-        // lock held by another writer - wait and retry
+        if (!tookOverStale) {
+          try {
+            const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+            if (age > STALE_LOCK_MS) {
+              fs.unlinkSync(lockPath); // crashed writer: take over once
+              tookOverStale = true;
+              continue;
+            }
+          } catch { /* released between EEXIST and stat: retry */ }
+        }
         Atomics.wait(int32, 0, 0, LOCK_DELAY_MS);
         continue;
       }
@@ -136,15 +151,24 @@ function withLock<T>(lockPath: string, fn: () => T): T {
  * tool call is issued (tool_call, in assistant source order), NOT when it
  * completes (tool_result, arbitrary for parallel execution). Rollback then
  * retires in descending seq - deterministic regardless of completion order.
+ *
+ * The reservation is DURABLE: a ``{"type": "reserved"}`` line is appended
+ * under the lock at issue time, so no other writer (or sibling tool call)
+ * can be assigned the same seq while the full record is still in flight.
  */
 const issuedSeqs = new Map<string, number>();
 
 function assignSeqAtIssue(toolCallId: string, journalPath: string): number {
-  // Take the cross-language lock so the shared seq counter is atomic
-  // across processes (pi extension + Python runtime + MCP middleware).
-  const seq = withLock(journalPath + ".lock", () => nextSeq(journalPath));
-  issuedSeqs.set(toolCallId, seq);
-  return seq;
+  let seq: number;
+  withLock(journalPath + ".lock", () => {
+    seq = nextSeq(journalPath);
+    _appendLine(
+      { type: "reserved", seq, toolCallId, ts: new Date().toISOString() },
+      journalPath,
+    );
+  });
+  issuedSeqs.set(toolCallId, seq!);
+  return seq!;
 }
 
 function takeSeqAtCompletion(toolCallId: string, journalPath: string): number {
@@ -153,35 +177,55 @@ function takeSeqAtCompletion(toolCallId: string, journalPath: string): number {
   return seq ?? nextSeq(journalPath); // fallback: not issued (shouldn't happen)
 }
 
+/** Append one line. Caller must hold the journal lock. */
+function _appendLine(record: Record<string, unknown>, journalPath: string): void {
+  fs.mkdirSync(path.dirname(journalPath), { recursive: true });
+  fs.appendFileSync(journalPath, JSON.stringify(record) + "\n", "utf8");
+}
+
+/** Append a record under the journal lock (the write is the critical section). */
 function appendJournal(record: Record<string, unknown>, journalPath: string): void {
-  try {
-    fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-    fs.appendFileSync(journalPath, JSON.stringify(record) + "\n", "utf8");
-  } catch (err) {
-    console.error(`[reversible] journal append failed: ${err}`);
-  }
+  withLock(journalPath + ".lock", () => {
+    _appendLine(record, journalPath);
+  });
 }
 
 function preimagePath(preimagesDir: string, toolCallId: string): string {
   return path.join(preimagesDir, `${toolCallId}.preimage`);
 }
 
-/** Snapshot a file's current bytes if it exists and is under the size cap. */
+type PreimageStatus = "absent" | "captured" | "skipped";
+
+/** Status of the last capture, keyed by toolCallId (same lifetime as issuedSeqs). */
+const preimageStatus = new Map<string, PreimageStatus>();
+
+/**
+ * Snapshot a file's current bytes before an overwrite, and REMEMBER why.
+ *
+ * "absent"  - the file did not exist: the inverse is delete_file.
+ * "captured" - preimage on disk: the inverse is restore_file.
+ * "skipped"  - the file EXISTS but we could not snapshot it (too large,
+ *              stat/copy error): there is NO safe inverse. Rollback must
+ *              not delete a file that existed before we touched it.
+ */
 function capturePreimage(
   filePath: string,
   preimagesDir: string,
   toolCallId: string,
-): string | undefined {
+): void {
+  let status: PreimageStatus = "skipped";
   try {
     const st = fs.statSync(filePath);
-    if (st.size > MAX_PREIMAGE_BYTES) return undefined;
-    fs.mkdirSync(preimagesDir, { recursive: true });
-    const dest = preimagePath(preimagesDir, toolCallId);
-    fs.copyFileSync(filePath, dest);
-    return dest;
-  } catch {
-    return undefined; // file didn't exist → no preimage needed
+    if (st.size <= MAX_PREIMAGE_BYTES) {
+      fs.mkdirSync(preimagesDir, { recursive: true });
+      fs.copyFileSync(filePath, preimagePath(preimagesDir, toolCallId));
+      status = "captured";
+    }
+  } catch (err) {
+    status =
+      (err as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "skipped";
   }
+  preimageStatus.set(toolCallId, status);
 }
 
 // ---------------------------------------------------------------------------
@@ -197,19 +241,32 @@ function recordResult(
   if (!cls) return; // read-only / unknown → not recorded
 
   const args = { ...event.input } as Record<string, unknown>;
-
-  // For write/edit, attach the preimage path if one was captured.
+  let actionType = cls.actionType;
   let recovery = cls.recovery;
   let recoveryArgs: unknown[] = cls.recoveryArgs.map((name) => args[name]);
+
   if (cls.preimage && typeof args.path === "string") {
     const pre = preimagePath(paths.preimages, event.toolCallId);
-    if (fs.existsSync(pre)) {
-      recoveryArgs = [args.path, pre]; // restore_file(path, preimage)
-    } else {
-      // No preimage: the write CREATED this file, so the inverse is delete.
+    // Unknown status (hook restarted mid-call) is treated as skipped:
+    // when we cannot PROVE the file was absent, we must not delete it.
+    const status: PreimageStatus =
+      preimageStatus.get(event.toolCallId) ??
+      (fs.existsSync(pre) ? "captured" : "skipped");
+    if (status === "captured") {
+      recovery = "restore_file";
+      recoveryArgs = [args.path, pre];
+    } else if (status === "absent") {
+      // The write CREATED this file, so the exact inverse is delete.
       recovery = "delete_file";
       recoveryArgs = [args.path];
+    } else {
+      // Existing file, snapshot unavailable: no safe inverse. Record as
+      // record-only (K/noop) - manual reversal, never a false "restored".
+      actionType = "K";
+      recovery = "noop";
+      recoveryArgs = [];
     }
+    preimageStatus.delete(event.toolCallId);
   }
 
   appendJournal(
@@ -220,7 +277,7 @@ function recordResult(
       session_id: sessionId,
       tool: event.toolName,
       args,
-      action_type: cls.actionType,
+      action_type: actionType,
       recovery,
       recovery_args: recoveryArgs,
       recovery_kwargs: {},
@@ -278,6 +335,7 @@ function pendingLines(journalPath: string, sessionId: string): JournalLine[] {
     return parsed.filter(
       (l) =>
         l.type !== "rollback" &&
+        l.type !== "reserved" && // in-flight: no record to undo yet
         typeof l.seq === "number" &&
         !undone.has(String(l.seq)) &&
         l.session_id === sessionId,
@@ -336,25 +394,41 @@ function quote(s: string): string {
 export default function (pi: ExtensionAPI) {
   // Issue: assign seq (program order) + preimage capture, BEFORE execution.
   // tool_call fires in assistant source order, so seq reflects intent.
+  // Recording is auxiliary: a failure here must never break tool dispatch.
   pi.on("tool_call", (event: ToolCallEvent, ctx) => {
-    const paths = resolvePaths(ctx?.cwd ?? process.cwd());
-    if (TOOL_CLASSES[event.toolName]) {
-      assignSeqAtIssue(event.toolCallId, paths.journal);
-    }
-    if (event.toolName === "write" || event.toolName === "edit") {
-      const input = event.input as { path?: string };
-      if (typeof input.path === "string") {
-        capturePreimage(input.path, paths.preimages, event.toolCallId);
+    try {
+      const paths = resolvePaths(ctx?.cwd ?? process.cwd());
+      if (TOOL_CLASSES[event.toolName]) {
+        assignSeqAtIssue(event.toolCallId, paths.journal);
       }
+      if (event.toolName === "write" || event.toolName === "edit") {
+        const input = event.input as { path?: string };
+        if (typeof input.path === "string") {
+          capturePreimage(input.path, paths.preimages, event.toolCallId);
+        }
+      }
+    } catch (err) {
+      console.error(`[reversible] issue-time recording failed: ${err}`);
     }
   });
 
-  // Recording: after execution, only if it succeeded.
+  // Recording: after execution, only if it succeeded. Errored calls are
+  // not recorded, and their issue-time state is cleaned up.
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
-    if (event.isError) return;
-    const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
-    const paths = resolvePaths(ctx?.cwd ?? process.cwd());
-    recordResult(event, sessionId, paths);
+    if (event.isError) {
+      issuedSeqs.delete(event.toolCallId);
+      preimageStatus.delete(event.toolCallId);
+      return;
+    }
+    try {
+      const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
+      const paths = resolvePaths(ctx?.cwd ?? process.cwd());
+      recordResult(event, sessionId, paths);
+    } catch (err) {
+      issuedSeqs.delete(event.toolCallId);
+      preimageStatus.delete(event.toolCallId);
+      console.error(`[reversible] recording failed: ${err}`);
+    }
   });
 
   // /revert: undo recorded actions, all of them or back to a chosen state.
@@ -373,22 +447,33 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Newest first: undoing the latest action is the common case.
+      // Each option carries its target seq alongside the label - no
+      // parsing the human-readable string.
       const newestFirst = [...pending].reverse();
-      const options = [
-        `Undo everything (${pending.length} action(s))`,
-        ...newestFirst.map(
-          (l) => `seq ${l.seq} - ${describeLine(l)}   (this and everything after)`,
-        ),
+      const options: Array<{ label: string; seq?: number }> = [
+        { label: `Undo everything (${pending.length} action(s))` },
+        ...newestFirst.map((l) => ({
+          label: `seq ${l.seq} - ${describeLine(l)}   (this and everything after)`,
+          seq: l.seq,
+        })),
       ];
-      const choice = await ctx.ui.select("Revert to state:", options);
+      const choice = await ctx.ui.select(
+        "Revert to state:",
+        options.map((o) => o.label),
+      );
       if (choice === undefined) return;
 
-      const toSeq = choice === options[0] ? undefined : Number(choice.split(" ")[1]);
+      const chosen = options.find((o) => o.label === choice) ?? options[0];
+      const toSeq = chosen.seq;
+      const undoCount =
+        toSeq === undefined
+          ? pending.length
+          : pending.length - pending.findIndex((l) => l.seq === toSeq);
       const ok = await ctx.ui.confirm(
         "Revert?",
         toSeq === undefined
           ? `Undo all ${pending.length} recorded action(s)?`
-          : `Undo seq ${toSeq} and everything after (${pending.length - pending.findIndex((l) => String(l.seq) === String(toSeq))} action(s))?`,
+          : `Undo seq ${toSeq} and everything after (${undoCount} action(s))?`,
       );
       if (!ok) return;
 

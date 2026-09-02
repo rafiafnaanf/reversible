@@ -6,7 +6,7 @@ import inspect
 from typing import Any, Callable
 
 from .action import ActionRecord, ActionType
-from .journal import JournalSink, filter_records, mark_rolled_back, next_seq
+from .journal import JournalSink, filter_records, mark_rolled_back, next_seq, read_journal, tombstoned_seqs
 from .logging import get_logger
 from .registry import ToolMetadata, registry
 from .rollback import RollbackEngine, RollbackResult
@@ -101,14 +101,23 @@ class Runtime:
             verify=verify,
             agent_id=self._agent_id,
             session_id=self._session_id,
-            namespace=self._namespace,
+            namespace=(metadata.namespace or self._namespace) if metadata else self._namespace,
             seq=0,  # assigned atomically by the sink below
         )
         self._stack.push(record)
         if self._sink is not None:
-            seq = self._sink.append_with_seq(record)
-            record.seq = seq
-            log.info("[JRNL] appended to %s", self._sink.path)
+            try:
+                seq = self._sink.append_with_seq(record)
+            except Exception as exc:  # noqa: BLE001 - sink failure must not lose the effect
+                record.seq = self._next_seq()
+                log.error(
+                    "[JRNL] sink append FAILED for %s: %r - action kept in "
+                    "memory only (seq %s); undo it via Runtime.rollback()",
+                    tool.__name__, exc, record.seq,
+                )
+            else:
+                record.seq = seq
+                log.info("[JRNL] appended to %s", self._sink.path)
         else:
             record.seq = self._next_seq()
 
@@ -172,12 +181,15 @@ class Runtime:
         With a sink, reads the journal and recovers the matching records
         (descending ``seq``). Without a sink, recovers the in-memory stack.
 
-        Each recovery is verified (``verify_recovery``) before the action is
-        dropped. On failure the engine stops by default (``continue_on_error
-        =False``), keeps the failed action, and returns a ``RollbackResult``
-        - it never claims the environment was restored. With
-        ``continue_on_error=True`` it keeps going past failures, undoing
-        what it can and reporting every failure.
+        Recoveries are verified (``verify_recovery``) only when records
+        come from the in-memory stack; journal-backed records cannot carry
+        predicates (documented gap), so sink-mode rollback runs unverified.
+
+        On failure the engine stops by default (``continue_on_error=False``),
+        keeps the failed action, and returns a ``RollbackResult`` - it never
+        claims the environment was restored. With ``continue_on_error=True``
+        it keeps going past failures, undoing what it can and reporting
+        every failure. Either way ``ok=False`` means not fully restored.
         """
         records = self._collect_records(agent_id, session_id)
         return self._rollback_records(
@@ -191,11 +203,16 @@ class Runtime:
         agent_id: str | None,
         session_id: str | None,
     ) -> list[Any]:
-        """Gather the records to consider, scoped by identity."""
-        if self._sink is not None:
-            from .journal import read_journal
+        """Gather the records to consider, scoped by identity.
 
+        Journal mode also drops tombstoned seqs (already undone by an
+        earlier rollback), so undo is idempotent from every entry point,
+        not just the CLI.
+        """
+        if self._sink is not None:
             records = read_journal(self._sink.path)
+            done = tombstoned_seqs(self._sink.path)
+            records = [r for r in records if str(r.seq) not in done]
             return filter_records(
                 records, agent_id=agent_id, session_id=session_id
             )
@@ -212,23 +229,28 @@ class Runtime:
         target: list[Any],
         continue_on_error: bool = False,
     ) -> RollbackResult:
-        """Recover ``target`` (subset of ``records``), then re-sync the stack.
+        """Recover ``target`` (subset of ``records``), then re-sync state.
 
-        Keeps only records not recovered; failed actions stay in the stack.
-        With a sink, appends a rollback marker so journal-based undo is
-        idempotent (recovered seqs are skipped by later rollbacks).
+        Journal mode: mark each recovered seq as it lands (so a killed run
+        keeps its markers) and do not repopulate the in-memory stack - the
+        journal is the source of truth. In-memory mode: keep only records
+        not recovered; failed actions stay in the stack.
         """
         engine = RollbackEngine(target, continue_on_error=continue_on_error)
-        result = engine.rollback()
+        on_recovered = (
+            (lambda seq: mark_rolled_back(self._sink.path, [seq], []))
+            if self._sink is not None
+            else None
+        )
+        result = engine.rollback(on_recovered=on_recovered)
+        if self._sink is not None and result.failed:
+            mark_rolled_back(self._sink.path, [], [s for s, _ in result.failed])
         recovered = set(result.recovered)
-        if self._sink is not None and result.recovered:
-            mark_rolled_back(
-                self._sink.path, result.recovered, [s for s, _ in result.failed]
-            )
         self._stack.clear()
-        for r in records:
-            if str(r.seq) not in recovered:
-                self._stack.push(r)
+        if self._sink is None:
+            for r in records:
+                if str(r.seq) not in recovered:
+                    self._stack.push(r)
         return result
 
     def _next_id(self) -> str:

@@ -9,6 +9,7 @@ Commands::
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -61,7 +62,7 @@ def _cmd_history(args: argparse.Namespace) -> int:
 
     if args.json:
         for r in records:
-            print(r.to_dict())
+            print(json.dumps(r.to_dict()))
         return 0
 
     if not records:
@@ -98,11 +99,13 @@ def _cmd_rollback(args: argparse.Namespace) -> int:
 
     print(f"Rollback {len(records)} action(s) from {args.journal} (LIFO)\n")
     engine = RollbackEngine(records, continue_on_error=args.continue_on_error)
-    result = engine.rollback()
 
-    # Append a rollback marker so a later rollback skips recovered seqs
-    # (failed actions stay pending for inspection/retry).
-    mark_rolled_back(args.journal, result.recovered, [s for s, _ in result.failed])
+    # Mark each seq as it is undone (a killed run keeps its markers), then
+    # record the failed set once at the end.
+    result = engine.rollback(
+        on_recovered=lambda seq: mark_rolled_back(args.journal, [seq], [])
+    )
+    mark_rolled_back(args.journal, [], [s for s, _ in result.failed])
 
     for seq in result.recovered:
         print(f"[UNDO] seq {seq} → OK")
@@ -126,9 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rollback":
         return _cmd_rollback(args)
 
+    # Unreachable with required subparsers; parser.error exits.
     parser.error(f"unknown command: {args.command}")
-    return 2
-
 
 if __name__ == "__main__":
     sys.exit(main())
