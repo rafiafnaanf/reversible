@@ -66,6 +66,10 @@ def reversible(
         # Auto-register the inverse by name in the namespace, so journal
         # records (storing the function name) resolve at rollback time.
         registry.register_recovery(inverse.__name__, inverse, namespace=namespace)
+        if verify is not None:
+            # Same for the verify predicate: journals carry its NAME, and
+            # journal-backed rollback resolves + runs it.
+            registry.register_verify(verify.__name__, verify, namespace=namespace)
         return tool
 
     return decorate

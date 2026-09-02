@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import inspect
 from typing import Any, Callable
 
@@ -41,11 +43,18 @@ class Runtime:
         namespace: str = "",
         sink: JournalSink | None = None,
     ) -> None:
+        # The "pass" path for scripts: a parent harness exports its journal
+        # coordinates, so a script's Runtime joins the parent's journal with
+        # the same identity. Explicit arguments always win over env vars.
+        env = os.environ
+        journal_env = env.get("REVERSIBLE_JOURNAL")
+        if sink is None and journal_env:
+            sink = JournalSink(journal_env)
         self._stack = ActionStack()
         self._counter = 0
-        self._agent_id = agent_id
-        self._session_id = session_id
-        self._namespace = namespace
+        self._agent_id = agent_id or env.get("REVERSIBLE_AGENT_ID", "")
+        self._session_id = session_id or env.get("REVERSIBLE_SESSION_ID", "")
+        self._namespace = namespace or env.get("REVERSIBLE_NAMESPACE", "")
         self._sink = sink
 
     # -- recording ---------------------------------------------------------

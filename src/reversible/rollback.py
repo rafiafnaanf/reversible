@@ -134,6 +134,25 @@ class RollbackEngine:
         # Verify restoration (the ASLR mechanism) - proves, not assumes.
         if isinstance(record, ActionRecord):
             record.verify_recovery()
+        elif getattr(record, "verify", None):
+            # Journal-backed verification: the record carries the verify
+            # predicate's NAME; resolve it like a recovery and run it with
+            # the same args the recovery got. Unresolvable = fail loudly
+            # (we cannot confirm restoration, so we do not claim it).
+            verify = registry.lookup_verify(record.verify, namespace=record.namespace)
+            if verify is None:
+                raise RollbackError(
+                    record,
+                    RuntimeError(f"no verify registered for {record.verify!r}"),
+                )
+            if not verify(*record.recovery_args, **record.recovery_kwargs):
+                raise RollbackError(
+                    record,
+                    AssertionError(
+                        f"verification failed for {record.tool!r}: "
+                        "state was not restored after recovery"
+                    ),
+                )
 
     @property
     def pending(self) -> list[ActionRecord | JournalRecord]:

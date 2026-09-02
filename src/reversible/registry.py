@@ -62,6 +62,7 @@ class RecoveryRegistry:
         self._tools: dict[Callable[..., Any], ToolMetadata] = {}
         self._by_name: dict[str, dict[str, Callable[..., Any]]] = {}
         self._execute_policies: dict[Callable[..., Any], str] = {}
+        self._verifies: dict[str, dict[str, Callable[..., Any]]] = {}
 
     def register(self, tool: Callable[..., Any], metadata: ToolMetadata) -> None:
         self._tools[tool] = metadata
@@ -119,6 +120,36 @@ class RecoveryRegistry:
         g = self._by_name.get("")
         return g.get(name) if g else None
 
+    # -- verify predicates (name-keyed, so journals can carry them) --------
+
+    def register_verify(
+        self, name: str, fn: Callable[..., Any], namespace: str = ""
+    ) -> None:
+        """Register a verify predicate by name.
+
+        Journal records carry verify as a NAME (predicates are not
+        serializable); the engine resolves the name at rollback time the
+        same way it resolves recoveries. Warns on overwrite.
+        """
+        ns = self._verifies.setdefault(namespace, {})
+        existing = ns.get(name)
+        if existing is not None and existing is not fn:
+            log.warning(
+                "[REG] overwriting verify %r in namespace %r - possible collision",
+                name, namespace,
+            )
+        ns[name] = fn
+
+    def lookup_verify(
+        self, name: str, namespace: str = ""
+    ) -> Callable[..., Any] | None:
+        """Resolve a verify name within a namespace, then global."""
+        ns = self._verifies.get(namespace)
+        if ns and name in ns:
+            return ns[name]
+        g = self._verifies.get("")
+        return g.get(name) if g else None
+
     def __len__(self) -> int:
         return len(self._tools) + sum(len(v) for v in self._by_name.values())
 
@@ -128,6 +159,7 @@ class RecoveryRegistry:
             "tools": dict(self._tools),
             "by_name": {ns: dict(fns) for ns, fns in self._by_name.items()},
             "policies": dict(self._execute_policies),
+            "verifies": {ns: dict(fns) for ns, fns in self._verifies.items()},
         }
 
     def restore(self, snap: dict[str, dict]) -> None:
@@ -138,6 +170,8 @@ class RecoveryRegistry:
         self._by_name.update(snap["by_name"])
         self._execute_policies.clear()
         self._execute_policies.update(snap["policies"])
+        self._verifies.clear()
+        self._verifies.update(snap["verifies"])
 
 
 # Default global registry shared by the decorators and the runtime.

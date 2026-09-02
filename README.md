@@ -194,6 +194,33 @@ uv run reversible history --agent pi --session sess-abc   # one session
 uv run reversible history --json                # raw JSON lines
 ```
 
+## Scripts: check, pass, or handle
+
+Every script execution (`bash deploy.sh`, `python migrate.py`) is checked
+against the script-handler fingerprints before it is recorded:
+
+- **Match** (path glob or content hash) → the record is `R` with the
+  handler's recovery (`recovery_args = [script_path]`). At rollback the
+  name resolves through the registry - fail-closed if missing.
+- **No match** → record-only `K/noop` (logged, manual reversal), exactly
+  as before.
+
+Configure handlers in `<journal-dir>/script-handlers.json`:
+
+```json
+{"handlers": [
+  {"glob": "deploy/*.sh", "recovery": "rollback_deploy"},
+  {"hash": "sha256:...", "recovery": "rollback_migrate"}
+]}
+```
+
+A handler is a named, registered recovery taking the script path:
+`registry.register_recovery("rollback_deploy", my_undo)`. Script runs also
+inherit journal coordinates through env vars (`REVERSIBLE_JOURNAL`,
+`REVERSIBLE_AGENT_ID`, `REVERSIBLE_SESSION_ID`, `REVERSIBLE_NAMESPACE`),
+so a cooperating script's `Runtime()` joins the parent's journal with the
+same identity. Explicit `Runtime(...)` arguments always win over env.
+
 ## Undo from pi: /revert
 
 The pi extension registers a `/revert` command. It lists the session's

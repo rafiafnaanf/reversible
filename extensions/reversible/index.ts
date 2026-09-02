@@ -25,6 +25,7 @@ import type { ExtensionAPI, ToolResultEvent, ToolCallEvent } from "@earendil-wor
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as crypto from "node:crypto";
 import { exec } from "node:child_process";
 
 // ---------------------------------------------------------------------------
@@ -200,6 +201,75 @@ export function splitShell(command: string): ShellPart[] {
 }
 
 // ---------------------------------------------------------------------------
+// Script handler fingerprints: every script execution is checked against
+// registered handlers; a match records R with that recovery, a miss logs
+// K/noop as usual. Config: <journal-dir>/script-handlers.json
+//   {"handlers": [{"glob": "deploy/*.sh", "recovery": "rollback_deploy"},
+//                 {"hash": "sha256:...", "recovery": "rollback_migrate"}]}
+// Handler signature: recovery(script_path) - resolves at rollback via the
+// Python registry; unresolvable names fail closed (RollbackError).
+// ---------------------------------------------------------------------------
+
+interface ScriptHandler {
+  glob?: string;
+  hash?: string; // sha256 hex, optional "sha256:" prefix
+  recovery: string;
+}
+
+function loadScriptHandlers(journalPath: string): ScriptHandler[] {
+  const cfg = path.join(path.dirname(journalPath), "script-handlers.json");
+  try {
+    const parsed = JSON.parse(fs.readFileSync(cfg, "utf8"));
+    return Array.isArray(parsed.handlers) ? parsed.handlers : [];
+  } catch {
+    return []; // no config: every script logs as K/noop
+  }
+}
+
+function globToRegex(glob: string): RegExp {
+  const esc = glob
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\u0000/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(`^${esc}$`);
+}
+
+function sha256File(absPath: string): string | undefined {
+  try {
+    return crypto.createHash("sha256").update(fs.readFileSync(absPath)).digest("hex");
+  } catch {
+    return undefined; // not a file / unreadable
+  }
+}
+
+/** First handler whose glob or content hash matches a token in the part. */
+export function matchScriptHandler(
+  part: string,
+  cwd: string,
+  handlers: ScriptHandler[],
+): { recovery: string; args: unknown[] } | undefined {
+  for (const token of part.split(/\s+/)) {
+    const p = token.replace(/^["']+|["']+$/g, "");
+    if (!p || p.startsWith("-")) continue;
+    for (const h of handlers) {
+      if (h.glob && globToRegex(h.glob).test(p)) {
+        return { recovery: h.recovery, args: [p] };
+      }
+      if (h.hash) {
+        const abs = path.isAbsolute(p) ? p : path.join(cwd, p);
+        const digest = sha256File(abs);
+        if (digest && digest === h.hash.replace(/^sha256:/, "")) {
+          return { recovery: h.recovery, args: [p] };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+// ---------------------------------------------------------------------------
 // Journal helpers
 // ---------------------------------------------------------------------------
 
@@ -290,7 +360,12 @@ function withLock<T>(lockPath: string, fn: () => T): T {
  */
 const issuedSeqs = new Map<string, number[]>();
 /** Split parts for the in-flight bash call, in appearance order. */
-const bashParts = new Map<string, ShellPart[]>();
+interface BashPart {
+  command: string;
+  inline: boolean;
+  handler?: { recovery: string; args: unknown[] }; // fingerprint match
+}
+const bashParts = new Map<string, BashPart[]>();
 
 function issueSeqs(toolCallId: string, journalPath: string, count: number): number[] {
   const seqs: number[] = [];
@@ -398,9 +473,9 @@ function recordResult(
           session_id: sessionId,
           tool: "bash",
           args: { command: part.command },
-          action_type: "K",
-          recovery: "noop",
-          recovery_args: [],
+          action_type: part.handler ? "R" : "K",
+          recovery: part.handler ? part.handler.recovery : "noop",
+          recovery_args: part.handler ? part.handler.args : [],
           recovery_kwargs: {},
           is_error: event.isError,
           result_summary: i === 0 ? summary : "",
@@ -573,9 +648,16 @@ export default function (pi: ExtensionAPI) {
         let partCount = 1;
         if (event.toolName === "bash") {
           const cmd = (event.input as { command?: string }).command ?? "";
+          const cwd = ctx?.cwd ?? process.cwd();
+          const handlers = loadScriptHandlers(paths.journal);
           const parts = splitShell(cmd);
           const safe = parts.length > 0 ? parts : [{ command: cmd, inline: false }];
-          bashParts.set(event.toolCallId, safe);
+          // Check every script execution against the handler fingerprints:
+          // a match records R with that handler's recovery, a miss logs K/noop.
+          bashParts.set(
+            event.toolCallId,
+            safe.map((p) => ({ ...p, handler: matchScriptHandler(p.command, cwd, handlers) })),
+          );
           partCount = safe.length;
         }
         issuedSeqs.set(

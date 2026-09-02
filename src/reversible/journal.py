@@ -45,6 +45,7 @@ class JournalRecord:
     result_summary: str = ""
     ts: str = ""
     namespace: str = ""
+    verify: str | None = None  # NAME of the verify predicate (resolved at rollback)
 
     def __str__(self) -> str:
         return f"{self.seq:03d} {self.action_type} {self.tool}"
@@ -64,6 +65,7 @@ class JournalRecord:
             "result_summary": self.result_summary,
             "ts": self.ts,
             "namespace": self.namespace,
+            "verify": self.verify,
         }
 
     @classmethod
@@ -82,6 +84,7 @@ class JournalRecord:
             result_summary=str(data.get("result_summary", "")),
             ts=str(data.get("ts", "")),
             namespace=str(data.get("namespace", "")),
+            verify=data.get("verify") and str(data["verify"]) or None,
         )
 
 
@@ -91,6 +94,25 @@ def _now_iso() -> str:
 
 def _callable_name(fn: Callable[..., Any] | str) -> str:
     return fn.__name__ if callable(fn) else str(fn)
+
+
+def _verify_name(verify: Callable[..., Any] | None) -> str | None:
+    """Serialize a verify predicate as its registered name.
+
+    Only named functions survive the journal (resolvable at rollback time
+    via ``registry.lookup_verify``). Lambdas cannot be named - they verify
+    in-memory only, and the journal record carries no verify field.
+    """
+    if verify is None:
+        return None
+    name = getattr(verify, "__name__", None)
+    if not name or name == "<lambda>":
+        log.warning(
+            "[JRNL] verify is a lambda - journal record will be unverified; "
+            "use a named function to verify journal-backed rollback"
+        )
+        return None
+    return name
 
 
 def _summary(result: Any, limit: int = 200) -> str:
@@ -146,6 +168,7 @@ def record_to_journal(record: ActionRecord) -> dict[str, Any]:
         "result_summary": _summary(record.result),
         "ts": record.ts or _now_iso(),
         "namespace": record.namespace,
+        "verify": _verify_name(record.verify),
     }
 
 
