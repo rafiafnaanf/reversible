@@ -61,17 +61,25 @@ Runtime
   plus append, so concurrent writers never collide on sequence numbers.
 * **Deterministic ordering**: `seq` is assigned at *issue* time (program
   order), so parallel execution can't scramble rollback order.
+* **Compound command splitting**: a `bash` call like `mkdir && touch` is
+  split into ordered sub-commands (quotes respected, inline `$()` hoisted
+  first) and logged as independent records, so rollback follows execution
+  order. Pipelines stay whole (see the plan docs).
 * **Rollback**: LIFO undo/compensation, scoped per agent/session, verified
-  after each recovery.
+  after each recovery (in-memory records; journal-backed rollback is
+  unverified - documented gap).
 * **Checkpoints**: roll back to a specific point, leaving earlier actions
   intact.
+* **Idempotent undo**: rollback markers tombstone recovered seqs, so
+  undoing twice never double-undoes; failed actions stay pending.
 * **Durable journal**: append-only JSONL, the cross-language contract
   between any harness and the engine.
 * **Multi-agent identity**: every record carries `agent_id`, `session_id`,
   and a global `seq`, so one shared journal can be filtered and rolled back
   per agent/session.
 * **Global pi hook**: a TypeScript extension that records effectful pi
-  tool calls into the journal automatically.
+  tool calls into the journal automatically, and a `/revert` command to
+  undo them (everything, or back to a chosen state) from inside pi.
 * **CLI**: `reversible history` / `reversible rollback`.
 
 ## Install

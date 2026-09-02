@@ -71,6 +71,135 @@ const TOOL_CLASSES: Record<string, ToolClass> = {
 };
 
 // ---------------------------------------------------------------------------
+// Shell command splitting (mirror of reversible/shellsplit.py - keep in sync;
+// the Python tests are the executable spec for this logic)
+// ---------------------------------------------------------------------------
+
+interface ShellPart {
+  command: string;
+  inline: boolean; // a $() substitution: executes BEFORE its outer part
+}
+
+/** Split on && / || / ; outside quotes and parens. */
+function splitTopLevel(command: string): string[] {
+  const parts: string[] = [];
+  const buf: string[] = [];
+  let quote: string | null = null;
+  let depth = 0;
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    if (quote !== null) {
+      buf.push(ch);
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      buf.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      buf.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      buf.push(ch);
+      i++;
+      continue;
+    }
+    if (depth === 0) {
+      const two = command.slice(i, i + 2);
+      if (two === "&&" || two === "||" || ch === ";") {
+        i += two === "&&" || two === "||" ? 2 : 1;
+        const part = buf.join("").trim();
+        if (part) parts.push(part);
+        buf.length = 0;
+        continue;
+      }
+    }
+    buf.push(ch);
+    i++;
+  }
+  const tail = buf.join("").trim();
+  if (tail) parts.push(tail);
+  return parts;
+}
+
+/** Top-level $() spans as [start, end, contents], quote-aware. */
+function inlineSpans(segment: string): Array<[number, number, string]> {
+  const spans: Array<[number, number, string]> = [];
+  let i = 0;
+  let quote: string | null = null;
+  while (i < segment.length) {
+    const ch = segment[i];
+    if (quote !== null) {
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      i++;
+      continue;
+    }
+    if (ch === "$" && i + 1 < segment.length && segment[i + 1] === "(") {
+      let depth = 1;
+      let j = i + 2;
+      let q: string | null = null;
+      while (j < segment.length && depth) {
+        const c = segment[j];
+        if (q !== null) {
+          if (c === q) q = null;
+        } else if (c === '"' || c === "'") {
+          q = c;
+        } else if (c === "(") {
+          depth++;
+        } else if (c === ")") {
+          depth--;
+        }
+        j++;
+      }
+      if (depth === 0) spans.push([i, j, segment.slice(i + 2, j - 1).trim()]);
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return spans;
+}
+
+/**
+ * Split a compound shell command into ordered parts (execution order):
+ * inline $() substitutions first (the shell evaluates them before the
+ * surrounding command), then enclosing parts in appearance order.
+ * Pipelines stay whole; an inline-only part emits just the inline.
+ */
+export function splitShell(command: string): ShellPart[] {
+  const parts: ShellPart[] = [];
+  for (const segment of splitTopLevel(command)) {
+    const spans = inlineSpans(segment);
+    for (const [, , content] of spans) {
+      parts.push({ command: content, inline: true });
+    }
+    let remainder = "";
+    let prev = 0;
+    for (const [start, end] of spans) {
+      remainder += segment.slice(prev, start);
+      prev = end;
+    }
+    remainder += segment.slice(prev);
+    if (remainder.trim()) parts.push({ command: segment, inline: false });
+  }
+  return parts;
+}
+
+// ---------------------------------------------------------------------------
 // Journal helpers
 // ---------------------------------------------------------------------------
 
@@ -145,36 +274,43 @@ function withLock<T>(lockPath: string, fn: () => T): T {
 }
 
 /**
- * seq assigned at ISSUE time (program order), keyed by toolCallId.
+ * seqs assigned at ISSUE time (program order), keyed by toolCallId.
  *
- * This is the Reorder-Buffer rule: assign the sequence number when the
+ * This is the Reorder-Buffer rule: assign the sequence numbers when the
  * tool call is issued (tool_call, in assistant source order), NOT when it
  * completes (tool_result, arbitrary for parallel execution). Rollback then
  * retires in descending seq - deterministic regardless of completion order.
  *
- * The reservation is DURABLE: a ``{"type": "reserved"}`` line is appended
- * under the lock at issue time, so no other writer (or sibling tool call)
- * can be assigned the same seq while the full record is still in flight.
+ * A compound bash command reserves ONE seq PER SPLIT PART (see splitShell):
+ * the parts are logged as independent records in execution order, so
+ * rollback undoes them in reverse appearance order. Reservations are
+ * DURABLE: ``{"type": "reserved"}`` lines are appended under one lock hold
+ * at issue time, so no other writer (or sibling tool call) can be assigned
+ * these seqs while the full records are still in flight.
  */
-const issuedSeqs = new Map<string, number>();
+const issuedSeqs = new Map<string, number[]>();
+/** Split parts for the in-flight bash call, in appearance order. */
+const bashParts = new Map<string, ShellPart[]>();
 
-function assignSeqAtIssue(toolCallId: string, journalPath: string): number {
-  let seq: number;
+function issueSeqs(toolCallId: string, journalPath: string, count: number): number[] {
+  const seqs: number[] = [];
   withLock(journalPath + ".lock", () => {
-    seq = nextSeq(journalPath);
-    _appendLine(
-      { type: "reserved", seq, toolCallId, ts: new Date().toISOString() },
-      journalPath,
-    );
+    for (let k = 0; k < count; k++) {
+      const seq = nextSeq(journalPath);
+      _appendLine(
+        { type: "reserved", seq, toolCallId, ts: new Date().toISOString() },
+        journalPath,
+      );
+      seqs.push(seq);
+    }
   });
-  issuedSeqs.set(toolCallId, seq!);
-  return seq!;
+  return seqs;
 }
 
-function takeSeqAtCompletion(toolCallId: string, journalPath: string): number {
-  const seq = issuedSeqs.get(toolCallId);
+function takeSeqsAtCompletion(toolCallId: string, journalPath: string): number[] {
+  const seqs = issuedSeqs.get(toolCallId);
   issuedSeqs.delete(toolCallId);
-  return seq ?? nextSeq(journalPath); // fallback: not issued (shouldn't happen)
+  return seqs ?? [nextSeq(journalPath)]; // fallback: not issued (shouldn't happen)
 }
 
 /** Append one line. Caller must hold the journal lock. */
@@ -241,6 +377,41 @@ function recordResult(
   if (!cls) return; // read-only / unknown → not recorded
 
   const args = { ...event.input } as Record<string, unknown>;
+  const summary = summarizeContent(event.content);
+  const seqs = takeSeqsAtCompletion(event.toolCallId, paths.journal);
+
+  // Compound bash command: one record per split part, in execution order
+  // (the seqs were reserved per-part at issue). Rollback then undoes the
+  // parts in reverse appearance order. Bash is record-only (K/noop):
+  // shell effects are not statically classifiable.
+  if (event.toolName === "bash" && typeof args.command === "string") {
+    const parts = bashParts.get(event.toolCallId) ?? [
+      { command: args.command, inline: false },
+    ];
+    bashParts.delete(event.toolCallId);
+    parts.forEach((part, i) => {
+      appendJournal(
+        {
+          seq: seqs[i] ?? seqs[0],
+          agent_id: AGENT_ID,
+          namespace: NAMESPACE,
+          session_id: sessionId,
+          tool: "bash",
+          args: { command: part.command },
+          action_type: "K",
+          recovery: "noop",
+          recovery_args: [],
+          recovery_kwargs: {},
+          is_error: event.isError,
+          result_summary: i === 0 ? summary : "",
+          ts: new Date().toISOString(),
+        },
+        paths.journal,
+      );
+    });
+    return;
+  }
+
   let actionType = cls.actionType;
   let recovery = cls.recovery;
   let recoveryArgs: unknown[] = cls.recoveryArgs.map((name) => args[name]);
@@ -271,7 +442,7 @@ function recordResult(
 
   appendJournal(
     {
-      seq: takeSeqAtCompletion(event.toolCallId, paths.journal),
+      seq: seqs[0],
       agent_id: AGENT_ID,
       namespace: NAMESPACE,
       session_id: sessionId,
@@ -282,7 +453,7 @@ function recordResult(
       recovery_args: recoveryArgs,
       recovery_kwargs: {},
       is_error: event.isError,
-      result_summary: summarizeContent(event.content),
+      result_summary: summary,
       ts: new Date().toISOString(),
     },
     paths.journal,
@@ -392,14 +563,25 @@ function quote(s: string): string {
 // ---------------------------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-  // Issue: assign seq (program order) + preimage capture, BEFORE execution.
+  // Issue: assign seqs (program order) + preimage capture, BEFORE execution.
   // tool_call fires in assistant source order, so seq reflects intent.
   // Recording is auxiliary: a failure here must never break tool dispatch.
   pi.on("tool_call", (event: ToolCallEvent, ctx) => {
     try {
       const paths = resolvePaths(ctx?.cwd ?? process.cwd());
       if (TOOL_CLASSES[event.toolName]) {
-        assignSeqAtIssue(event.toolCallId, paths.journal);
+        let partCount = 1;
+        if (event.toolName === "bash") {
+          const cmd = (event.input as { command?: string }).command ?? "";
+          const parts = splitShell(cmd);
+          const safe = parts.length > 0 ? parts : [{ command: cmd, inline: false }];
+          bashParts.set(event.toolCallId, safe);
+          partCount = safe.length;
+        }
+        issuedSeqs.set(
+          event.toolCallId,
+          issueSeqs(event.toolCallId, paths.journal, partCount),
+        );
       }
       if (event.toolName === "write" || event.toolName === "edit") {
         const input = event.input as { path?: string };
@@ -417,6 +599,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", (event: ToolResultEvent, ctx) => {
     if (event.isError) {
       issuedSeqs.delete(event.toolCallId);
+      bashParts.delete(event.toolCallId);
       preimageStatus.delete(event.toolCallId);
       return;
     }
@@ -426,6 +609,7 @@ export default function (pi: ExtensionAPI) {
       recordResult(event, sessionId, paths);
     } catch (err) {
       issuedSeqs.delete(event.toolCallId);
+      bashParts.delete(event.toolCallId);
       preimageStatus.delete(event.toolCallId);
       console.error(`[reversible] recording failed: ${err}`);
     }
