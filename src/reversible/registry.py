@@ -116,6 +116,23 @@ class RecoveryRegistry:
     def __len__(self) -> int:
         return len(self._tools) + sum(len(v) for v in self._by_name.values())
 
+    def snapshot(self) -> dict[str, dict]:
+        """Capture the full registry state (for test isolation / restore)."""
+        return {
+            "tools": dict(self._tools),
+            "by_name": {ns: dict(fns) for ns, fns in self._by_name.items()},
+            "policies": dict(self._execute_policies),
+        }
+
+    def restore(self, snap: dict[str, dict]) -> None:
+        """Restore a state captured by :meth:`snapshot`."""
+        self._tools.clear()
+        self._tools.update(snap["tools"])
+        self._by_name.clear()
+        self._by_name.update(snap["by_name"])
+        self._execute_policies.clear()
+        self._execute_policies.update(snap["policies"])
+
 
 # Default global registry shared by the decorators and the runtime.
 registry = RecoveryRegistry()

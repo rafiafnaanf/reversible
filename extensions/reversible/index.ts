@@ -25,6 +25,7 @@ import type { ExtensionAPI, ToolResultEvent, ToolCallEvent } from "@earendil-wor
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { exec } from "node:child_process";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -198,11 +199,17 @@ function recordResult(
   const args = { ...event.input } as Record<string, unknown>;
 
   // For write/edit, attach the preimage path if one was captured.
-  let recoveryArgs = cls.recoveryArgs.map((name) => args[name]);
+  let recovery = cls.recovery;
+  let recoveryArgs: unknown[] = cls.recoveryArgs.map((name) => args[name]);
   if (cls.preimage && typeof args.path === "string") {
     const pre = preimagePath(paths.preimages, event.toolCallId);
-    if (fs.existsSync(pre)) recoveryArgs = [args.path, pre];
-    else recoveryArgs = ["delete_file", args.path]; // created new file → delete
+    if (fs.existsSync(pre)) {
+      recoveryArgs = [args.path, pre]; // restore_file(path, preimage)
+    } else {
+      // No preimage: the write CREATED this file, so the inverse is delete.
+      recovery = "delete_file";
+      recoveryArgs = [args.path];
+    }
   }
 
   appendJournal(
@@ -214,7 +221,7 @@ function recordResult(
       tool: event.toolName,
       args,
       action_type: cls.actionType,
-      recovery: cls.recovery,
+      recovery,
       recovery_args: recoveryArgs,
       recovery_kwargs: {},
       is_error: event.isError,
@@ -239,6 +246,87 @@ function summarizeContent(content: unknown): string {
   } catch {
     return "";
   }
+}
+
+// ---------------------------------------------------------------------------
+// Revert command (/revert): undo recorded actions via the Python CLI
+// ---------------------------------------------------------------------------
+
+interface JournalLine {
+  seq?: number;
+  type?: string;
+  tool?: string;
+  args?: Record<string, unknown>;
+  session_id?: string;
+  is_error?: boolean;
+  recovered?: string[];
+}
+
+/** Pending (not yet undone) journal lines for one session, oldest first. */
+function pendingLines(journalPath: string, sessionId: string): JournalLine[] {
+  try {
+    if (!fs.existsSync(journalPath)) return [];
+    const lines = fs.readFileSync(journalPath, "utf8").split("\n").filter(Boolean);
+    const parsed: JournalLine[] = [];
+    for (const line of lines) {
+      try { parsed.push(JSON.parse(line) as JournalLine); } catch { continue; }
+    }
+    const undone = new Set<string>();
+    for (const marker of parsed.filter((l) => l.type === "rollback")) {
+      for (const seq of marker.recovered ?? []) undone.add(String(seq));
+    }
+    return parsed.filter(
+      (l) =>
+        l.type !== "rollback" &&
+        typeof l.seq === "number" &&
+        !undone.has(String(l.seq)) &&
+        l.session_id === sessionId,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function describeLine(line: JournalLine): string {
+  const target =
+    typeof line.args?.path === "string"
+      ? line.args.path
+      : typeof line.args?.command === "string"
+        ? String(line.args.command).slice(0, 60)
+        : "";
+  return `${line.tool ?? "?"}${target ? ` ${target}` : ""}`;
+}
+
+/** Run the Python rollback CLI and report the outcome. */
+function runRevert(
+  cliCommand: string,
+  journalPath: string,
+  sessionId: string,
+  toSeq: number | undefined,
+  cwd: string,
+  notify: (msg: string, level?: "info" | "error") => void,
+): void {
+  const args = [
+    "rollback", "--journal", journalPath,
+    "--agent", "pi", "--session", sessionId,
+  ];
+  if (toSeq !== undefined) args.push("--to", String(toSeq));
+  const cmd = `${cliCommand} ${args.map(quote).join(" ")}`;
+  exec(cmd, { cwd, timeout: 120_000 }, (err, stdout, stderr) => {
+    const output = `${stdout ?? ""}${stderr ? `\n${stderr}` : ""}`.trim();
+    if (err) {
+      const hint = err.message.includes("ENOENT")
+        ? " (is the reversible CLI installed? set REVERSIBLE_CLI, e.g.\n  uv run --project /path/to/reversible python -m reversible.cli)"
+        : "";
+      notify(`[reversible] revert FAILED${hint}\n${output.slice(0, 800)}`, "error");
+    } else {
+      notify(`[reversible] reverted:\n${output.slice(0, 800)}`, "info");
+    }
+  });
+}
+
+function quote(s: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : `"${s.replace(/(["$`\\])/g, "\\$1")}"`;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,5 +355,51 @@ export default function (pi: ExtensionAPI) {
     const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
     const paths = resolvePaths(ctx?.cwd ?? process.cwd());
     recordResult(event, sessionId, paths);
+  });
+
+  // /revert: undo recorded actions, all of them or back to a chosen state.
+  // Reversal executes in Python (recovery implementations + verification
+  // live there); the journal is the only bridge between the two sides.
+  pi.registerCommand("revert", {
+    description: "Reverse pi's file actions (reversible journal)",
+    handler: async (_args, ctx) => {
+      const cwd = ctx?.cwd ?? process.cwd();
+      const paths = resolvePaths(cwd);
+      const sessionId = ctx?.sessionManager?.getSessionId() ?? "";
+      const pending = pendingLines(paths.journal, sessionId);
+      if (pending.length === 0) {
+        ctx.ui.notify("[reversible] nothing to revert", "info");
+        return;
+      }
+
+      // Newest first: undoing the latest action is the common case.
+      const newestFirst = [...pending].reverse();
+      const options = [
+        `Undo everything (${pending.length} action(s))`,
+        ...newestFirst.map(
+          (l) => `seq ${l.seq} - ${describeLine(l)}   (this and everything after)`,
+        ),
+      ];
+      const choice = await ctx.ui.select("Revert to state:", options);
+      if (choice === undefined) return;
+
+      const toSeq = choice === options[0] ? undefined : Number(choice.split(" ")[1]);
+      const ok = await ctx.ui.confirm(
+        "Revert?",
+        toSeq === undefined
+          ? `Undo all ${pending.length} recorded action(s)?`
+          : `Undo seq ${toSeq} and everything after (${pending.length - pending.findIndex((l) => String(l.seq) === String(toSeq))} action(s))?`,
+      );
+      if (!ok) return;
+
+      runRevert(
+        process.env.REVERSIBLE_CLI ?? "python3 -m reversible.cli",
+        paths.journal,
+        sessionId,
+        toSeq,
+        cwd,
+        (msg, level) => ctx.ui.notify(msg, level ?? "info"),
+      );
+    },
   });
 }

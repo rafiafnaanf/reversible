@@ -23,10 +23,10 @@ def test_undecorated_tool_is_not_recorded():
 def test_mixed_registered_and_unregistered():
     calls = []
 
-    def delete_file(path: str) -> None:
+    def fake_remove(path: str) -> None:
         calls.append(("delete", path))
 
-    @reversible(inverse=delete_file, inverse_args=("path",))
+    @reversible(inverse=fake_remove, inverse_args=("path",))
     def create_file(path: str, content: str) -> None:
         calls.append(("create", path, content))
 
@@ -46,10 +46,10 @@ def test_mixed_registered_and_unregistered():
 def test_history_order_is_oldest_first():
     calls = []
 
-    def delete_file(path: str) -> None:
+    def fake_remove(path: str) -> None:
         calls.append(("delete", path))
 
-    @reversible(inverse=delete_file, inverse_args=("path",))
+    @reversible(inverse=fake_remove, inverse_args=("path",))
     def create_file(path: str, content: str) -> None:
         calls.append(("create", path, content))
 

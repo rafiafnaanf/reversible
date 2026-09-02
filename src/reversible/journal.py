@@ -249,7 +249,11 @@ class JournalSink:
 
 
 def read_journal(path: str | Path) -> list[JournalRecord]:
-    """Read all records from a journal file, oldest first."""
+    """Read all records from a journal file, oldest first.
+
+    Rollback-marker lines (``{"type": "rollback", ...}``) are skipped:
+    they are not actions, they mark actions as already undone.
+    """
     records: list[JournalRecord] = []
     p = Path(path)
     if not p.exists():
@@ -260,10 +264,76 @@ def read_journal(path: str | Path) -> list[JournalRecord]:
             if not line:
                 continue
             try:
-                records.append(JournalRecord.from_dict(json.loads(line)))
-            except (json.JSONDecodeError, ValueError) as exc:
+                data = json.loads(line)
+            except json.JSONDecodeError as exc:
+                log.warning("[JRNL] skipping malformed line: %s", exc)
+                continue
+            if data.get("type") == "rollback":
+                continue
+            try:
+                records.append(JournalRecord.from_dict(data))
+            except (ValueError, KeyError, TypeError) as exc:
                 log.warning("[JRNL] skipping malformed line: %s", exc)
     return records
+
+
+def read_rollback_markers(path: str | Path) -> list[dict[str, Any]]:
+    """Read the rollback markers appended by previous rollback runs."""
+    markers: list[dict[str, Any]] = []
+    p = Path(path)
+    if not p.exists():
+        return markers
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if data.get("type") == "rollback":
+                markers.append(data)
+    return markers
+
+
+def tombstoned_seqs(path: str | Path) -> set[str]:
+    """Seqs already undone by a previous rollback (across all markers).
+
+    These records stay in the file (append-only audit trail) but are
+    skipped by later rollbacks, so undo is idempotent.
+    """
+    done: set[str] = set()
+    for marker in read_rollback_markers(path):
+        for seq in marker.get("recovered", []):
+            done.add(str(seq))
+    return done
+
+
+def mark_rolled_back(
+    path: str | Path,
+    recovered: list[str],
+    failed: list[str],
+) -> None:
+    """Append a rollback marker recording which seqs were undone.
+
+    Only ``recovered`` seqs are tombstoned; failed actions stay pending
+    (they remain in the stack for inspection/retry). Appended under the
+    journal lock so markers never interleave with other writers.
+    """
+    if not recovered and not failed:
+        return
+    marker = {
+        "type": "rollback",
+        "recovered": [str(s) for s in recovered],
+        "failed": [str(s) for s in failed],
+        "ts": _now_iso(),
+    }
+    with JournalLock(path):
+        with open(Path(path), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(marker, default=str) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
 
 
 def next_seq(path: str | Path) -> int:

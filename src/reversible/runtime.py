@@ -6,7 +6,7 @@ import inspect
 from typing import Any, Callable
 
 from .action import ActionRecord, ActionType
-from .journal import JournalSink, filter_records, next_seq
+from .journal import JournalSink, filter_records, mark_rolled_back, next_seq
 from .logging import get_logger
 from .registry import ToolMetadata, registry
 from .rollback import RollbackEngine, RollbackResult
@@ -215,10 +215,16 @@ class Runtime:
         """Recover ``target`` (subset of ``records``), then re-sync the stack.
 
         Keeps only records not recovered; failed actions stay in the stack.
+        With a sink, appends a rollback marker so journal-based undo is
+        idempotent (recovered seqs are skipped by later rollbacks).
         """
         engine = RollbackEngine(target, continue_on_error=continue_on_error)
         result = engine.rollback()
         recovered = set(result.recovered)
+        if self._sink is not None and result.recovered:
+            mark_rolled_back(
+                self._sink.path, result.recovered, [s for s, _ in result.failed]
+            )
         self._stack.clear()
         for r in records:
             if str(r.seq) not in recovered:

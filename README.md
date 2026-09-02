@@ -186,6 +186,19 @@ uv run reversible history --agent pi --session sess-abc   # one session
 uv run reversible history --json                # raw JSON lines
 ```
 
+## Undo from pi: /revert
+
+The pi extension registers a `/revert` command. It lists the session's
+pending actions (newest first) and undoes either everything or everything
+from a chosen action onward, by invoking the Python CLI:
+
+- default: `python3 -m reversible.cli` (the `reversible` package must be
+  importable); override with `REVERSIBLE_CLI`, e.g.
+  `REVERSIBLE_CLI="uv run --project /path/to/reversible python -m reversible.cli"`
+- rollback is idempotent: recovered seqs are tombstoned with rollback
+  markers appended to the journal, so `/revert` twice never double-undoes
+- failed actions stay pending for a later retry
+
 ## Rollback
 
 `Runtime.rollback()` undoes recorded actions in LIFO order, optionally

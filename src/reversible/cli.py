@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .journal import filter_records, read_journal
+from .journal import filter_records, mark_rolled_back, read_journal, tombstoned_seqs
 from .rollback import RollbackEngine
 
 DEFAULT_JOURNAL = Path.home() / ".reversible" / "journal.jsonl"
@@ -71,11 +71,13 @@ def _cmd_history(args: argparse.Namespace) -> int:
     print(f"Journal: {args.journal}  ({len(records)} records)\n")
     print(f"{'seq':>4}  {'agent':<14} {'session':<12} {'type':<4} {'tool':<20} recovery")
     print("-" * 80)
+    done = tombstoned_seqs(args.journal)
     for r in records:
         session = r.session_id[:12] if r.session_id else "-"
+        undone = " [UNDONE]" if str(r.seq) in done else ""
         print(
             f"{r.seq:>4}  {r.agent_id:<14} {session:<12} {r.action_type:<4} "
-            f"{r.tool:<20} {r.recovery}"
+            f"{r.tool:<20} {r.recovery}{undone}"
         )
     return 0
 
@@ -83,17 +85,24 @@ def _cmd_history(args: argparse.Namespace) -> int:
 def _cmd_rollback(args: argparse.Namespace) -> int:
     records = read_journal(args.journal)
     records = filter_records(records, agent_id=args.agent_id, session_id=args.session_id)
+    # Skip actions already undone by an earlier rollback (idempotent undo).
+    done = tombstoned_seqs(args.journal)
+    records = [r for r in records if str(r.seq) not in done]
 
     if args.checkpoint is not None:
         records = [r for r in records if r.seq >= args.checkpoint]
 
     if not records:
-        print(f"(no records in {args.journal})")
+        print(f"(no records to undo in {args.journal})")
         return 0
 
     print(f"Rollback {len(records)} action(s) from {args.journal} (LIFO)\n")
     engine = RollbackEngine(records, continue_on_error=args.continue_on_error)
     result = engine.rollback()
+
+    # Append a rollback marker so a later rollback skips recovered seqs
+    # (failed actions stay pending for inspection/retry).
+    mark_rolled_back(args.journal, result.recovered, [s for s, _ in result.failed])
 
     for seq in result.recovered:
         print(f"[UNDO] seq {seq} → OK")
