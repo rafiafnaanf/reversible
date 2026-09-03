@@ -10,7 +10,31 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from .action import ActionType
+from .logging import get_logger
 from .registry import ToolMetadata, registry
+
+log = get_logger()
+
+
+def _register_callable(kind: str, fn: Callable[..., Any], namespace: str) -> None:
+    """Register an inverse/compensation/verify by name for journal resolution.
+
+    Lambdas have no stable name ("<lambda>") - they work in-memory but can
+    never resolve from a journal, so registering them would only pollute
+    the namespace. Named functions are required for journal-backed undo.
+    """
+    name = getattr(fn, "__name__", "")
+    if not name or name == "<lambda>":
+        log.warning(
+            "[REG] %s is a lambda - journal-backed rollback cannot resolve it; "
+            "use a named function",
+            kind,
+        )
+        return
+    if kind == "verify":
+        registry.register_verify(name, fn, namespace=namespace)
+    else:
+        registry.register_recovery(name, fn, namespace=namespace)
 
 # Default execution policies for @execute.
 EXECUTE_POLICY_SKIP = "skip"        # trusted → not logged
@@ -63,13 +87,11 @@ def reversible(
             namespace=namespace or None,
         )
         registry.register(tool, metadata)
-        # Auto-register the inverse by name in the namespace, so journal
-        # records (storing the function name) resolve at rollback time.
-        registry.register_recovery(inverse.__name__, inverse, namespace=namespace)
+        # Auto-register the inverse (and verify) by name in the namespace, so
+        # journal records (storing the function name) resolve at rollback time.
+        _register_callable("inverse", inverse, namespace)
         if verify is not None:
-            # Same for the verify predicate: journals carry its NAME, and
-            # journal-backed rollback resolves + runs it.
-            registry.register_verify(verify.__name__, verify, namespace=namespace)
+            _register_callable("verify", verify, namespace)
         return tool
 
     return decorate
@@ -107,9 +129,9 @@ def compensable(
             namespace=namespace or None,
         )
         registry.register(tool, metadata)
-        registry.register_recovery(
-            compensation.__name__, compensation, namespace=namespace
-        )
+        _register_callable("compensation", compensation, namespace)
+        if verify is not None:
+            _register_callable("verify", verify, namespace)
         return tool
 
     return decorate
